@@ -1,0 +1,1 @@
+DELETE FROM coefficient WHERE id = :id;
