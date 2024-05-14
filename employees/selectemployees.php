@@ -1,4 +1,5 @@
 <?php
+    #set XML in Postman to view result of code
     global $databasehandler;
     require_once(__DIR__ . '/../configDB.php');
 
@@ -6,4 +7,4 @@
     foreach ($databasehandler->query($sql) as $row) {
         print "<br/>";
         print $row['id'] . '-' . $row['fio'] . '-' . $row['hire_date'] . '-' . $row['termination_date'] . '<br/>';}
-?>
+    ?>

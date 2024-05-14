@@ -1,4 +1,5 @@
 <?php
+    global $databasehandler;
     require 'configDB.php';
     $sql = 'UPDATE employees SET termination_date = :termination_date WHERE id = :id';
     $query = $databasehandler->prepare($sql);

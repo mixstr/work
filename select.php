@@ -1,4 +1,5 @@
 <?php
+    global $databasehandler;
     try {
         require 'configDB.php';
 

@@ -1,4 +1,5 @@
 <?php
+    global $databasehandler;
     require 'configDB.php';
     $sql = 'INSERT INTO employees(id, fio, hire_date, termination_date) VALUES(:id, :fio, :hire_date, :termination_date)';
     $query = $databasehandler->prepare($sql);
