@@ -1,0 +1,1 @@
+DELETE FROM month WHERE id = (SELECT month_id FROM coefficient WHERE id = :id);
