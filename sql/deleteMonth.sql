@@ -1,1 +1,1 @@
-DELETE FROM month WHERE id = :id;
+DELETE FROM month WHERE id = ?;
