@@ -1,20 +1,20 @@
 <?php
-    require_once(dirname(__FILE__) . '/../configDB.php');
-    $sql = file_get_contents(dirname(__FILE__) . '/../sql/deleteEmployees.sql');
-    $monthIDtoCascadeDelete = array();
+    require_once(dirname(__DIR__) . '/configDB.php');
+    $deleteEmployees = file_get_contents(dirname(__DIR__) . '/sql/deleteEmployees.sql');
+    $monthIds = array();
     $arguments= [
         'id' => $_GET['id']
     ];
-    $sql2 = file_get_contents(dirname(__FILE__) . '/../sql/cascadeMonthToEmployees.sql');
+    $sqlMonthID = file_get_contents(dirname(__DIR__) . '/sql/cascadeMonthToEmployees.sql');
     global $databasehandler;
-    execution($sql2, $arguments);
-    $monthIDtoCascadeDelete = $databasehandler->query($sql2)->fetchAll(PDO::FETCH_COLUMN);
-    $monthIDtoCascadeDelete = array_unique($monthIDtoCascadeDelete);
-    $sql3 = file_get_contents(dirname(__FILE__) . '/../sql/deleteEmployeesCascadeMonth.sql');
-    foreach ($monthIDtoCascadeDelete as &$value){
-        execution($sql3, $value);
+    $result = execution($sqlMonthID, $arguments);
+    $monthIds = $result->fetchAll(PDO::FETCH_COLUMN);
+    $monthIds = array_unique($monthIds);
+    $deleteMonth = file_get_contents(dirname(__DIR__) . '/sql/deleteMonth.sql');
+    foreach ($monthIds as &$value){
+        execution($deleteMonth, $value);
     }
-    $sql4 = file_get_contents(dirname(__FILE__) . '/../sql/deleteEmployeesCascadeCoefficient.sql');
-    execution($sql4, $arguments);
-    execution($sql, $arguments);
+    $deleteCoefficient = file_get_contents(dirname(__DIR__) . '/sql/deleteEmployeesCascadeCoefficient.sql');
+    execution($deleteCoefficient, $arguments);
+    execution($deleteEmployees, $arguments);
 ?>

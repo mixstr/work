@@ -1,6 +1,6 @@
 <?php
-    require_once(dirname(__FILE__) . '/../configDB.php');
-    $sql = file_get_contents(dirname(__FILE__) . '/../sql/updateEmployees.sql');
+    require_once(dirname(__DIR__) . '/configDB.php');
+    $sql = file_get_contents(dirname(__DIR__) . '/sql/updateEmployees.sql');
     $arguments = [
         'id' => $_GET['id'],
         'FIO' => $_GET['FIO'],
