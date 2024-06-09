@@ -6,7 +6,6 @@
         'id' => $_GET['id']
     ];
     $sqlMonthID = file_get_contents(dirname(__DIR__) . '/sql/cascadeMonthToEmployees.sql');
-    global $databasehandler;
     $result = execution($sqlMonthID, $arguments);
     $monthIds = $result->fetchAll(PDO::FETCH_COLUMN);
     $monthIds = array_unique($monthIds);
