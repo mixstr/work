@@ -1,7 +1,9 @@
 <?php
     require_once(dirname(__DIR__) . '/configDB.php');
+
     $sql = file_get_contents(dirname(__DIR__) . '/sql/selectEmployees.sql');
-    $query = $databasehandler->query($sql);
+    $query = $databasehandler->prepare($sql);
+    $query->execute($sql);
 
     foreach ($query as $row) {
         print "<br/>";
