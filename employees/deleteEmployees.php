@@ -11,7 +11,7 @@
     $monthIds = array_unique($monthIds);
     $deleteMonth = file_get_contents(dirname(__DIR__) . '/sql/deleteMonth.sql');
 
-    foreach ($monthIds as &$value) {
+    foreach ($monthIds as $value) {
         execution($deleteMonth, $value);
     }
 
