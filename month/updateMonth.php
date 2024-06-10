@@ -1,6 +1,8 @@
 <?php
-    require_once(dirname(__DIR__) . '/configDB.php');
+    require(dirname(__DIR__) . '/configDB.php');
+
     $sql = file_get_contents(dirname(__DIR__) . '/sql/updateMonth.sql');
+
     $arguments = [
         'id' => $_GET['id'],
         'name' => $_GET['name'],
@@ -8,5 +10,6 @@
         'month' => $_GET['month'],
         'year' => $_GET['year'],
     ];
+
     execution($sql, $arguments);
 ?>
