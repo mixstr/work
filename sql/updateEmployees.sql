@@ -1,0 +1,1 @@
+UPDATE employees SET FIO = :FIO, hire_date = :hire_date, termination_date = :termination_date WHERE id = :id;

@@ -1,0 +1,1 @@
+DELETE FROM coefficient WHERE employee_id = :id;
