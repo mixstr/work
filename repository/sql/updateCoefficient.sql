@@ -1,0 +1,1 @@
+UPDATE coefficient SET employee_id = :employee_id, month_id = :month_id, coefficient = :coefficient WHERE id = :id;
