@@ -3,13 +3,21 @@
 namespace app\controller;
 
 use app\service\MonthService;
-use app\dto\MonthDto;
+use app\core\RequestValidator;
+use app\entities\MonthEntity;
+use Doctrine\ORM\EntityManager;
 
 class MonthController
 {
+    public $validator;
     private MonthService $monthService;
+    public EntityManager $entityManager;
+
     public function __construct()
     {
+        require_once "bootstrap.php";
+        $this->entityManager = callEntityManager();
+        $this->validator = new RequestValidator($_REQUEST);
         $this->monthService = new MonthService();
     }
 
@@ -18,67 +26,59 @@ class MonthController
         $this->monthService->selectAll();
     }
 
-    public function selectById($request)
+    public function selectById($id)
     {
-        $monthDto = new MonthDto();
-        $monthDto->id = $request["id"];
-        return $this->monthService->selectById($monthDto);
+        $id = $this->validator->validateInt('id');
+        $this->monthService->selectById($id);
     }
     
-    public function selectByName($request)
+    public function selectByName($name)
     {
-        $monthDto = new MonthDto();
-        $monthDto->id = $request["name"];
-        return $this->monthService->selectByName($monthDto);
+        $name = $this->validator->validateString('name');
+        $this->monthService->selectByName($name);
     }
 
-    public function selectByDay($request)
+    public function selectByDay($day)
     {
-        $monthDto = new MonthDto();
-        $monthDto->id = $request["day"];
-        return $this->monthService->selectByDay($monthDto);
+        $day = $this->validator->validateInt('day');
+        $this->monthService->selectByDay($day);
+    }
+    
+    public function selectByMonth($monthID)
+    {
+        $monthID = $this->validator->validateInt('month');
+        $this->monthService->selectByMonth($monthID);
     }
 
-    public function selectByMonth($request)
+    public function selectByYear($year)
     {
-        $monthDto = new MonthDto();
-        $monthDto->id = $request["month"];
-        return $this->monthService->selectByMonth($monthDto);
-    }
-
-    public function selectByYear($request)
-    {
-        $monthDto = new MonthDto();
-        $monthDto->id = $request["year"];
-        return $this->monthService->selectByYear($monthDto);
+        $year = $this->validator->validateInt('year');
+        $this->monthService->selectByYear($year);
     }
 
     public function insert($request)
     {
-        $monthDto = new MonthDto();
-        $monthDto->id = $request["id"];
-        $monthDto->name = $request["name"];
-        $monthDto->day= $request["day"];
-        $monthDto->month = $request["month"];
-        $monthDto->year = $request["year"];
-        $this->monthService->insert($monthDto);
+        $id =  $this->validator->validateInt('id', 'int');
+        $name = $this->validator->validateParam('name', 'string');
+        $day = $this->validator->validateParam('day', 'int');
+        $month = $this->validator->validateParam('month', 'float');
+        $year = $this->validator->validateParam('year', 'float');
+        $this->monthService->insert($id, $name, $day, $month, $year);
     }
-
     public function update($request)
     {
-        $monthDto = new MonthDto();
-        $monthDto->id = $request["newId"];
-        $monthDto->name = $request["newName"];
-        $monthDto->day= $request["newDay"];
-        $monthDto->month = $request["newMonth"];
-        $monthDto->year = $request["newYear"];
-        $this->monthService->update($monthDto);
+        $id =  $this->validator->validateInt('id', 'int');
+        $name = $this->validator->validateParam('name', 'string');
+        $day = $this->validator->validateParam('day', 'int');
+        $month = $this->validator->validateParam('month', 'float');
+        $year = $this->validator->validateParam('year', 'float');
+        $this->monthService->update($id, $name, $day, $month, $year);
     }
 
     public function delete($request)
     {
-        $monthDto = new MonthDto();
-        $monthDto->id = $request["id"];
-        $this->monthService->delete($monthDto);
+        $id = $this->validator->validateInt('id');
+        $this->monthService->delete($id);
     }
+
 }

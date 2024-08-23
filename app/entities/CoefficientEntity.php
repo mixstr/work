@@ -10,7 +10,6 @@ class CoefficientEntity
 {
     #[ORM\Id]
     #[ORM\Column(type: 'integer')]
-    #[ORM\GeneratedValue(strategy: "AUTO")]
     private ?int $id = null;
 
     #[ORM\Column(type: 'integer')]
@@ -25,6 +24,11 @@ class CoefficientEntity
     public function getId(): int
     {
         return $this->id;
+    }
+
+    public function setId(?int $newId): void
+    {
+        $this->id = $newId;
     }
 
     public function getEmployee(): string

@@ -12,8 +12,8 @@ class Router{
     public $method;
 
     public function __construct(){
-        $this->act = $_GET["act"];
-        $this->method = $_GET["method"];
+        $this->act = $_REQUEST["act"];
+        $this->method = $_REQUEST["method"];
         $this->validAct();
     }
 
@@ -33,70 +33,79 @@ class Router{
         }
     }
 
-    public function monthMethod($method){
+    public function monthMethod(){
         $month = new MonthController;
-        switch($method){
+        switch($this->method){
             case "selectAll":
                 $month->selectAll();
                 break;
             case "selectById":
+                $id = $_REQUEST["id"];
                 $month->selectById($id);
                 break;
             case "selectByDay":
+                $day = $_REQUEST["day"];
                 $month->selectByDay($day);
                 break;
             case "selectByName":
+                $name = $_REQUEST["name"];
                 $month->selectByName($name);
                 break;
             case "selectByMonth":
-                $month->selectByMonth($month);
+                $monthID = $_REQUEST["month"];
+                $month->selectByMonth($monthID);
                 break;
             case "selectByYear":
+                $year = $_REQUEST["year"];
                 $month->selectByYear($year);
                 break;
             case "insert":
-                $month->insert($values);
+                $month->insert($_REQUEST);
                 break;
             case "update":
-                $month->update($method);
+                $month->update($_REQUEST);
                 break;
             case "delete":
-                $month->delete($method);
+                $month->delete($_REQUEST);
                 break;
             default:
-                echo "Invalid method for month";
+                echo "Invalid method for month: " . $this->method;
         }
     }
 
-    public function employeeMethod($method){
+    public function employeeMethod(){
         $employee = new EmployeeController;
-        switch($method){
+        switch($this->method){
             case "selectAll":
                 $employee->selectAll();
                 break;
             case "selectById":
-                $employee->selectById();
+                $id = $_REQUEST["id"];
+                $employee->selectById($id);
                 break;
             case "selectByFio":
-                $employee->selectByFio();
+                $fio = $_REQUEST["fio"];
+                $employee->selectByFio($fio);
                 break;
             case "selectByHire":
-                $employee->selectByHire();
+                $hire_date = $_REQUEST["hire_date"];
+                $employee->selectByHire($hire_date);
                 break;
             case "selectByTermination":
-                $employee->selectByTermination();
+                $termination_date = $_REQUEST["termination_date"];
+                $employee->selectByTermination($termination_date);
                 break;
             case "insert":
-                $employee->insert();
+                $employee->insert($_REQUEST);
                 break;
             case "update":
-                $employee->update();
+                $employee->update($_REQUEST);
                 break;
             case "delete":
-                $employee->delete();
+                $employee->delete($_REQUEST);
                 break;
             default:
-                echo "Invalid method for employee";
+                echo "Invalid method for employee: " . $this->method;
         }
     }
 
@@ -115,20 +124,20 @@ class Router{
                 $coefficient->selectByEmployee($employee_id);
                 break;
             case "selectByMonth":
-                $month = $_REQUEST["month"];
-                $coefficient->selectByMonth($month);
+                $month_id = $_REQUEST["month"];
+                $coefficient->selectByMonth($month_id);
                 break;
             case "insert":
-                $coefficient->insert();
+                $coefficient->insert($_REQUEST);
                 break;
             case "update":
-                $coefficient->update();
+                $coefficient->update($_REQUEST);
                 break;
             case "delete":
-                $coefficient->delete();
+                $coefficient->delete($_REQUEST);
                 break;
             default:
-                echo "Invalid method for coefficient";
+                echo "Invalid method for coefficient: " . $this->method;
         }
     }
 }

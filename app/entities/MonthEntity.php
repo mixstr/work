@@ -2,9 +2,6 @@
 
 namespace app\Entities;
 
-use Doctrine\Common\Collections\ArrayCollection;
-use Doctrine\Common\Collections\Collection;
-use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\Mapping as ORM;
 
 #[ORM\Entity]
@@ -12,24 +9,28 @@ use Doctrine\ORM\Mapping as ORM;
 class MonthEntity {
     #[ORM\Id]
     #[ORM\Column(type: 'integer')]
-    #[ORM\GeneratedValue(strategy: "AUTO")]
     private ?int $id = null;
 
     #[ORM\Column(type: 'string')]
-    private ?int $name = null;
+    private ?string $name = null;
 
     #[ORM\Column(type: 'integer')]
     private ?int $day = null;
 
     #[ORM\Column(type: 'integer')]
-    private ?float $month = null;
+    private ?int $month = null;
 
     #[ORM\Column(type: 'integer')]
-    private ?float $year = null;
+    private ?int $year = null;
 
     public function getId(): int
     {
         return $this->id;
+    }
+
+    public function setId(?int $id): void
+    {
+        $this->id = $id;
     }
 
     public function getName(): string

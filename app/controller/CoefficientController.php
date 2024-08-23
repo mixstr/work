@@ -3,13 +3,21 @@
 namespace app\controller;
 
 use app\service\CoefficientService;
-use app\dto\CoefficientDto;
+use app\core\RequestValidator;
+use app\entities\CoefficientEntity;
+use Doctrine\ORM\EntityManager;
 
 class CoefficientController
 {
+    public $validator;
     private CoefficientService $coefficientService;
+    public EntityManager $entityManager;
+
     public function __construct()
     {
+        require_once "bootstrap.php";
+        $this->entityManager = callEntityManager();
+        $this->validator = new RequestValidator($_REQUEST);
         $this->coefficientService = new CoefficientService();
     }
 
@@ -20,43 +28,42 @@ class CoefficientController
 
     public function selectById($id)
     {
+        $id = $this->validator->validateInt('id');
         $this->coefficientService->selectById($id);
     }
     
     public function selectByEmployee($employee_id)
     {
+        $employee_id = $this->validator->validateInt('employee_id');
         $this->coefficientService->selectByEmployee($employee_id);
     }
     
     public function selectByMonth($month_id)
     {
+        $month_id = $this->validator->validateInt('month_id');
         $this->coefficientService->selectByMonth($month_id);
     }
 
     public function insert($request)
     {
-        $coefficientDto = new CoefficientDto();
-        $coefficientDto->id = $request["id"];
-        $coefficientDto->employee_id = $request["employee_id"];
-        $coefficientDto->month_id = $request["month_id"];
-        $coefficientDto->coefficient = $request["coefficient"];
-        $this->coefficientService->insert($coefficientDto);
+        $id =  $this->validator->validateInt('id', 'int');
+        $employee_id = $this->validator->validateInt('employee_id', 'int');
+        $month_id = $this->validator->validateInt('month_id', 'int');
+        $coefficient = $this->validator->validateParam('coefficient', 'float');
+        $this->coefficientService->insert($id, $employee_id, $month_id, $coefficient);
     }
-
     public function update($request)
     {
-        $coefficientDto = new CoefficientDto();
-        $coefficientDto->id = $request["id"];
-        $coefficientDto->employee_id = $request["employee_id"];
-        $coefficientDto->month_id = $request["month_id"];
-        $coefficientDto->coefficient = $request["coefficient"];
-        $this->coefficientService->update($coefficientDto);
+        $id =  $this->validator->validateInt('id', 'int');
+        $employee_id = $this->validator->validateParam('employee_id', 'int');
+        $month_id = $this->validator->validateParam('month_id', 'int');
+        $coefficient = $this->validator->validateParam('coefficient', 'float');
+        $this->coefficientService->update($id, $employee_id, $month_id, $coefficient);
     }
 
     public function delete($request)
     {
-        $coefficientDto = new CoefficientDto();
-        $coefficientDto->id = $request["id"];
-        $this->coefficientService->delete($coefficientDto);
+        $id = $this->validator->validateInt('id');
+        $this->coefficientService->delete($id);
     }
 }

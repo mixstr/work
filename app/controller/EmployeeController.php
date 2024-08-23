@@ -3,13 +3,22 @@
 namespace app\controller;
 
 use app\service\EmployeeService;
-use app\dto\EmployeeDto;
+use app\core\RequestValidator;
+use app\entities\EmployeeEntity;
+use DateTime;
+use Doctrine\ORM\EntityManager;
 
 class EmployeeController
 {
+    public $validator;
     private EmployeeService $employeeService;
+    public EntityManager $entityManager;
+
     public function __construct()
     {
+        require_once "bootstrap.php";
+        $this->entityManager = callEntityManager();
+        $this->validator = new RequestValidator($_REQUEST);
         $this->employeeService = new EmployeeService();
     }
 
@@ -18,58 +27,56 @@ class EmployeeController
         $this->employeeService->selectAll();
     }
 
-    public function selectById($request)
+    public function selectById($id)
     {
-        $employeeDto = new EmployeeDto();
-        $employeeDto->id = $request["id"];
-        return $this->employeeService->selectById($employeeDto);
-    }
-    
-    public function selectByFio($request)
-    {
-        $employeeDto = new EmployeeDto();
-        $employeeDto->fio = $request["fio"];
-        return $this->employeeService->selectByFio($employeeDto);
-    }
-    
-    public function selectByHire($request)
-    {
-        $employeeDto = new EmployeeDto();
-        $employeeDto->hire_date = $request["hire_date"];
-        return $this->employeeService->selectByHire($employeeDto);
+        $id = $this->validator->validateInt('id');
+        $this->employeeService->selectById($id);
     }
 
-    public function selectByTermination($request)
+    public function selectByFio()
     {
-        $employeeDto = new EmployeeDto();
-        $employeeDto->termination_date = $request["termination_date"];
-        return $this->employeeService->selectByTermination($employeeDto);
+        $fio = $this->validator->validateString('fio');
+        $this->employeeService->selectByFio($fio);
+    }
+    
+    public function selectByHire($hire_date)
+    {
+        $hire_date = $this->validator->validateParam('hire_date', 'date');
+        foreach ($hire_date as $date)
+        {
+            $this->employeeService->selectByHire($date);
+        }
+    }
+    
+    public function selectByTermination($termination_date)
+    {
+        $termination_date = $this->validator->validateParam('termination_date', 'date');
+        foreach ($termination_date as $date)
+        {
+            $this->employeeService->selectByTermination($date);
+        }
     }
 
     public function insert($request)
     {
-        $employeeDto = new EmployeeDto();
-        $employeeDto->id = $request["id"];
-        $employeeDto->fio = $request["fio"];
-        $employeeDto->hire_date = $request["hire_date"];
-        $employeeDto->termination_date = $request["termination_date"];
-        $this->employeeService->insert($employeeDto);
+        $id =  $this->validator->validateInt('id');
+        $fio = $this->validator->validateString('fio');
+        $hire_date = $this->validator->validateDate('hire_date');
+        $termination_date = $this->validator->validateParam('termination_date', 'date');
+        $this->employeeService->insert($id, $fio, $hire_date, $termination_date);
     }
-
     public function update($request)
     {
-        $employeeDto = new EmployeeDto();
-        $employeeDto->id = $request["newId"];
-        $employeeDto->fio = $request["newFio"];
-        $employeeDto->hire_date = $request["newHire_date"];
-        $employeeDto->termination_date = $request["newTermination_date"];
-        $this->employeeService->update($employeeDto);
+        $id =  $this->validator->validateInt('id');
+        $fio = $this->validator->validateString('fio');
+        $hire_date = $this->validator->validateParam('hire_date', 'date');
+        $termination_date = $this->validator->validateParam('termination_date', 'date');
+        $this->employeeService->update($id, $fio, $hire_date, $termination_date);
     }
 
     public function delete($request)
     {
-        $employeeDto = new EmployeeDto();
-        $employeeDto->id = $request["id"];
-        $this->employeeService->delete($employeeDto);
+        $id = $this->validator->validateInt('id');
+        $this->employeeService->delete($id);
     }
 }

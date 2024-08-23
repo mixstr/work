@@ -2,6 +2,7 @@
 
 namespace app\entities;
 
+use DateTime;
 use Doctrine\ORM\Mapping as ORM;
 
 #[ORM\Entity]
@@ -9,7 +10,6 @@ use Doctrine\ORM\Mapping as ORM;
 class EmployeeEntity
 {
     #[ORM\Id]
-    #[ORM\GeneratedValue(strategy: "AUTO")]
     #[ORM\Column(type: 'integer')]
     private ?int $id = null;
 
@@ -17,14 +17,19 @@ class EmployeeEntity
     private ?string $fio = null;
 
     #[ORM\Column(type: 'date')]
-    private ?int $hire_date = null;
+    private ?DateTime $hire_date = null;
 
     #[ORM\Column(type: 'date')]
-    private ?int $termination_date = null;
+    private ?DateTime $termination_date = null;
 
     public function getId(): ?int
     {
         return $this->id;
+    }
+
+    public function setId(?int $newId): void
+    {
+        $this->id = $newId;
     }
 
     public function getFio(): ?string
