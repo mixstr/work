@@ -4,7 +4,6 @@ namespace app\controller;
 
 use app\service\CoefficientService;
 use app\core\RequestValidator;
-use app\entities\CoefficientEntity;
 use Doctrine\ORM\EntityManager;
 
 class CoefficientController

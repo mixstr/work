@@ -4,7 +4,6 @@ namespace app\controller;
 
 use app\service\MonthService;
 use app\core\RequestValidator;
-use app\entities\MonthEntity;
 use Doctrine\ORM\EntityManager;
 
 class MonthController
