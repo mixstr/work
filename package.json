@@ -1,0 +1,17 @@
+{
+  "name": "antiyoy-web",
+  "version": "1.0.0",
+  "description": "Online multiplayer web clone of Antiyoy (turn-based hex strategy)",
+  "main": "server/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}

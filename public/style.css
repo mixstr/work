@@ -1,0 +1,134 @@
+:root {
+  --bg: #0e1726;
+  --sea: #15263f;
+  --card: #1b2940;
+  --accent: #3a78e6;
+  --text: #e8eef7;
+  --muted: #93a4bd;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.screen { position: absolute; inset: 0; }
+.hidden { display: none !important; }
+
+/* ---- Menu / lobby cards ---- */
+#menu, #lobby {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.card {
+  background: var(--card);
+  border-radius: 16px;
+  padding: 28px;
+  width: min(420px, 92vw);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+h1 { margin: 0 0 18px; font-size: 34px; }
+h1 span { color: var(--accent); }
+h2 { margin: 0 0 8px; }
+
+label { display: block; margin: 10px 0; color: var(--muted); font-size: 14px; }
+
+input {
+  width: 100%;
+  margin-top: 4px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  border: 1px solid #2c3d5c;
+  background: #11192a;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.row { display: flex; gap: 10px; margin-top: 12px; align-items: stretch; }
+.row input { margin: 0; }
+.row #joinCode { flex: 1; text-align: center; letter-spacing: 4px; font-size: 20px; }
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  background: #2c3d5c;
+  color: var(--text);
+  transition: transform 0.05s, background 0.15s;
+}
+button:hover { background: #36496b; }
+button:active { transform: scale(0.97); }
+button.primary { background: var(--accent); width: 100%; }
+button.primary:hover { background: #4c87f0; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.divider { text-align: center; color: var(--muted); margin: 18px 0 4px; }
+.settings { margin-top: 18px; color: var(--muted); }
+.settings summary { cursor: pointer; }
+.error { color: #ff6b6b; min-height: 18px; margin: 12px 0 0; }
+.hint { color: var(--muted); font-size: 13px; }
+.code { color: var(--accent); letter-spacing: 4px; }
+
+#playerList { list-style: none; padding: 0; margin: 16px 0; }
+#playerList li {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 8px; background: #11192a; margin-bottom: 6px;
+}
+.swatch { width: 18px; height: 18px; border-radius: 50%; display: inline-block; }
+.dot-off { opacity: 0.4; }
+
+/* ---- Game ---- */
+#board { display: block; width: 100vw; height: 100vh; background: var(--sea); touch-action: none; }
+
+#topbar {
+  position: absolute; top: 10px; left: 10px; right: 10px;
+  display: flex; gap: 8px; pointer-events: none;
+}
+.tag {
+  background: rgba(13, 20, 34, 0.85);
+  padding: 8px 14px; border-radius: 20px; font-size: 14px; font-weight: 600;
+  backdrop-filter: blur(4px);
+}
+
+#panel {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: rgba(13, 20, 34, 0.92);
+  backdrop-filter: blur(6px);
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 8px;
+}
+.prov-info { font-size: 14px; color: var(--muted); min-height: 18px; }
+.prov-info b { color: var(--text); }
+.buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.buy { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 4px; font-size: 13px; }
+.buy small { color: #ffd866; font-weight: 700; }
+.buy.active { background: var(--accent); }
+.endturn { background: #2e7d46; }
+.endturn:hover { background: #379a55; }
+.endturn.ready { background: #e6b73a; color: #1b2940; }
+.hand { font-size: 14px; color: #ffd866; text-align: center; }
+
+.toast {
+  position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
+  background: rgba(230, 71, 58, 0.95); padding: 10px 18px; border-radius: 10px;
+  font-weight: 600; z-index: 20;
+}
+.overlay {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(8, 12, 20, 0.8); z-index: 30; text-align: center;
+}
+.overlay .card { width: min(360px, 90vw); }
