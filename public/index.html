@@ -34,7 +34,16 @@
         <summary>Настройки карты (для новой игры)</summary>
         <label>Ширина <input id="optW" type="number" min="6" max="24" value="14" /></label>
         <label>Высота <input id="optH" type="number" min="6" max="20" value="11" /></label>
-        <label>Макс. игроков <input id="optMax" type="number" min="2" max="6" value="4" /></label>
+        <label>Макс. игроков <input id="optMax" type="number" min="2" max="8" value="4" /></label>
+        <label>Деревья <input id="optTrees" type="checkbox" checked /></label>
+        <label>Таймер хода
+          <select id="optTimer">
+            <option value="0">выкл</option>
+            <option value="30">30 сек</option>
+            <option value="45">45 сек</option>
+            <option value="60">60 сек</option>
+          </select>
+        </label>
       </details>
 
       <p id="menuError" class="error"></p>
@@ -52,7 +61,16 @@
         <legend>Настройки игры</legend>
         <label>Ширина карты <input id="lobW" type="number" min="6" max="24" /></label>
         <label>Высота карты <input id="lobH" type="number" min="6" max="20" /></label>
-        <label>Макс. игроков <input id="lobMax" type="number" min="2" max="6" /></label>
+        <label>Макс. игроков <input id="lobMax" type="number" min="2" max="8" /></label>
+        <label>Деревья <input id="lobTrees" type="checkbox" /></label>
+        <label>Таймер хода
+          <select id="lobTimer">
+            <option value="0">выкл</option>
+            <option value="30">30 сек</option>
+            <option value="45">45 сек</option>
+            <option value="60">60 сек</option>
+          </select>
+        </label>
         <p id="settingsHint" class="hint"></p>
       </fieldset>
 
@@ -71,18 +89,28 @@
     <div id="topbar">
       <span id="roomTag" class="tag"></span>
       <span id="turnTag" class="tag"></span>
+      <span id="timerTag" class="tag hidden"></span>
+      <span style="flex:1"></span>
+      <button id="btnEndGame" class="tag tagbtn hidden">Завершить игру</button>
     </div>
 
     <div id="panel">
       <div id="provInfo" class="prov-info">Выберите свою провинцию</div>
+
+      <div id="unitMenu" class="unit-menu hidden"></div>
+
       <div class="buttons">
-        <button data-buy="peasant" class="buy">Крестьянин<small>10</small></button>
+        <button id="btnUnit" class="buy">Юнит ▲<small id="unitPick">выбрать</small></button>
         <button data-buy="farm" class="buy">Ферма<small id="farmCost">12</small></button>
         <button data-buy="tower" class="buy">Башня<small>15</small></button>
-        <button data-buy="strongTower" class="buy">Сильн. башня<small>35</small></button>
+        <button data-buy="strongTower" class="buy">Сильн.<small>35</small></button>
+        <button data-buy="ballista" class="buy">Баллиста<small>80</small></button>
       </div>
       <div id="hand" class="hand hidden"></div>
-      <button id="btnEnd" class="endturn">Завершить ход</button>
+      <div class="action-row">
+        <button id="btnUndo" class="undo" disabled>↶ Отменить</button>
+        <button id="btnEnd" class="endturn">Завершить ход</button>
+      </div>
     </div>
 
     <div id="toast" class="toast hidden"></div>

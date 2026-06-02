@@ -9,20 +9,37 @@ const DIRS = [
   [1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1],
 ];
 
-// Upkeep per turn by unit level.
+// Upkeep per turn by unit level (peasant / spearman / baron / knight).
 const UPKEEP = { 1: 2, 2: 6, 3: 18, 4: 54 };
 
-// Build / purchase costs.
-const PEASANT_COST = 10;
+// Special units / buildings.
+const HORSEMAN_COST = 25;
+const HORSEMAN_UPKEEP = 10;   // between spearman (6) and baron (18): mobility premium
+const HORSEMAN_RANGE = 2;     // ~1.5x reach of a normal unit (1)
+
+const BALLISTA_COST = 80;
+const BALLISTA_UPKEEP = 60;   // a bit more than a knight (54)
+const BALLISTA_RANGE = 2;     // can fire at units within 2 hexes
+const BALLISTA_LEVEL = 3;     // defense; broken by a level-4 knight
+
+// Direct purchase cost of a basic unit = 10 * level.
+function unitCost(level) { return 10 * level; }
+
+// Build / purchase costs for structures.
 const TOWER_COST = 15;
 const STRONG_TOWER_COST = 35;
 const FARM_BASE = 12;
 const FARM_STEP = 2;
 
-// Defense level provided by a building when sitting on a hex.
-const BUILDING_DEFENSE = { castle: 1, tower: 2, strongTower: 3, farm: 0 };
+// Defense level provided by a building.
+const BUILDING_DEFENSE = { castle: 1, tower: 2, strongTower: 3, ballista: 3, farm: 0 };
+// Per-turn upkeep for buildings (most are free).
+const BUILDING_UPKEEP = { ballista: BALLISTA_UPKEEP };
 
 const STARTING_MONEY = 10;
+
+const KIND_BY_LEVEL = ['peasant', 'spearman', 'baron', 'knight'];
+function deriveKind(level) { return KIND_BY_LEVEL[level - 1] || 'knight'; }
 
 function key(q, r) { return q + ',' + r; }
 
@@ -38,28 +55,33 @@ function hexDistance(a, b) {
   return (Math.abs(a.q - b.q) + Math.abs(a.r - b.r) + Math.abs(a.q + a.r - b.q - b.r)) / 2;
 }
 
+function unitUpkeep(unit) {
+  if (!unit) return 0;
+  if (unit.kind === 'horseman') return HORSEMAN_UPKEEP;
+  return UPKEEP[unit.level] || 0;
+}
+
 class Game {
   /**
    * @param {Array<{name:string,color:string}>} players ordered seats
-   * @param {{width?:number,height?:number,water?:number,trees?:number}} opts
+   * @param {{width?:number,height?:number,water?:number,trees?:boolean}} opts
    */
   constructor(players, opts = {}) {
     this.players = players.map((p, i) => ({
-      index: i,
-      name: p.name,
-      color: p.color,
-      alive: true,
+      index: i, name: p.name, color: p.color, alive: true,
     }));
-    this.hexes = new Map(); // key -> hex
+    this.hexes = new Map();
     this.current = 0;
     this.status = 'playing';
     this.winner = null;
     this.turnCount = 0;
     this.lastError = null;
+    this.treesEnabled = opts.trees !== false;
+    this.undoStack = [];
 
     this.generateMap(opts);
     this.recomputeProvinces();
-    this.beginTurn(); // first player's turn setup
+    this.beginTurn();
   }
 
   // ---- map helpers ---------------------------------------------------------
@@ -75,89 +97,68 @@ class Game {
     return out;
   }
 
+  newHex(q, r) {
+    return {
+      q, r, owner: null, building: null, unit: null,
+      tree: false, gravestone: false, money: 0, fired: false,
+    };
+  }
+
   generateMap(opts) {
     const width = Math.min(Math.max(opts.width || 14, 6), 24);
     const height = Math.min(Math.max(opts.height || 11, 6), 20);
     const waterRatio = opts.water != null ? opts.water : 0.14;
-    const treeRatio = opts.trees != null ? opts.trees : 0.05;
+    const treeRatio = this.treesEnabled ? 0.05 : 0;
 
-    // Build a rhombus of hexes, then carve out some water.
     for (let r = 0; r < height; r++) {
       for (let q = 0; q < width; q++) {
-        if (Math.random() < waterRatio) continue; // water = missing hex
-        this.hexes.set(key(q, r), {
-          q, r,
-          owner: null,
-          building: null,
-          unit: null,
-          tree: false,
-          gravestone: false,
-          money: 0,
-        });
+        if (Math.random() < waterRatio) continue;
+        this.hexes.set(key(q, r), this.newHex(q, r));
       }
     }
 
-    // Make sure we have a decent connected landmass: keep largest component.
     this.keepLargestLandmass();
 
-    // Place starting positions for each player, spread apart.
     const land = [...this.hexes.values()];
     shuffle(land);
     const starts = [];
     const minDist = Math.max(3, Math.floor(Math.min(width, height) / 2));
-    for (const h of land) {
-      if (starts.length >= this.players.length) break;
-      // needs at least one land neighbour to form a 2-hex province
-      if (this.neighbors(h).length === 0) continue;
-      let ok = true;
-      for (const s of starts) {
-        if (hexDistance(h, s) < minDist) { ok = false; break; }
-      }
-      if (ok) starts.push(h);
-    }
-    // Relax distance constraint if the map was too small to place everyone.
-    let relax = minDist;
-    while (starts.length < this.players.length && relax > 1) {
-      relax--;
+    const tryPlace = (dist) => {
       for (const h of land) {
         if (starts.length >= this.players.length) break;
         if (starts.includes(h)) continue;
         if (this.neighbors(h).length === 0) continue;
         let ok = true;
-        for (const s of starts) if (hexDistance(h, s) < relax) { ok = false; break; }
+        for (const s of starts) if (hexDistance(h, s) < dist) { ok = false; break; }
         if (ok) starts.push(h);
       }
-    }
+    };
+    tryPlace(minDist);
+    let relax = minDist;
+    while (starts.length < this.players.length && relax > 1) { relax--; tryPlace(relax); }
 
     starts.forEach((h, i) => {
       h.owner = i;
       h.building = 'castle';
       h.money = STARTING_MONEY;
-      h.unit = { level: 1, moved: false };
-      // claim one neighbour so the province has size >= 2
+      h.unit = { level: 1, kind: 'peasant', moved: false };
       const nbs = this.neighbors(h).filter((n) => n.owner === null);
-      if (nbs.length) {
-        const n = nbs[Math.floor(Math.random() * nbs.length)];
-        n.owner = i;
-      }
+      if (nbs.length) nbs[Math.floor(Math.random() * nbs.length)].owner = i;
     });
 
-    // Scatter some trees on neutral land.
     for (const h of this.hexes.values()) {
-      if (h.owner === null && !h.building && Math.random() < treeRatio) {
-        h.tree = true;
-      }
+      if (h.owner === null && !h.building && Math.random() < treeRatio) h.tree = true;
     }
   }
 
   keepLargestLandmass() {
     const seen = new Set();
     let best = null;
-    for (const [k, h] of this.hexes) {
-      if (seen.has(k)) continue;
+    for (const [kk, h] of this.hexes) {
+      if (seen.has(kk)) continue;
       const comp = [];
       const stack = [h];
-      seen.add(k);
+      seen.add(kk);
       while (stack.length) {
         const c = stack.pop();
         comp.push(c);
@@ -170,32 +171,17 @@ class Game {
     }
     if (!best) return;
     const keep = new Set(best.map((h) => key(h.q, h.r)));
-    for (const k of [...this.hexes.keys()]) {
-      if (!keep.has(k)) this.hexes.delete(k);
-    }
+    for (const kk of [...this.hexes.keys()]) if (!keep.has(kk)) this.hexes.delete(kk);
   }
 
   // ---- provinces -----------------------------------------------------------
 
-  /** Returns list of {capital, members} for every province (size >= 2). */
   getProvinces() {
     const seen = new Set();
     const provinces = [];
-    for (const [k, h] of this.hexes) {
-      if (h.owner === null || seen.has(k)) continue;
-      const comp = [];
-      const stack = [h];
-      seen.add(k);
-      while (stack.length) {
-        const c = stack.pop();
-        comp.push(c);
-        for (const nb of this.neighbors(c)) {
-          if (nb.owner === h.owner && !seen.has(key(nb.q, nb.r))) {
-            seen.add(key(nb.q, nb.r));
-            stack.push(nb);
-          }
-        }
-      }
+    for (const [kk, h] of this.hexes) {
+      if (h.owner === null || seen.has(kk)) continue;
+      const comp = this.componentFrom(h, seen);
       if (comp.length >= 2) {
         const cap = comp.find((x) => x.building === 'castle') || null;
         provinces.push({ capital: cap, members: comp });
@@ -204,24 +190,28 @@ class Game {
     return provinces;
   }
 
-  /** Re-derive capitals & money after any ownership change. */
-  recomputeProvinces() {
-    const seen = new Set();
-    for (const [k, h] of this.hexes) {
-      if (h.owner === null || seen.has(k)) continue;
-      const comp = [];
-      const stack = [h];
-      seen.add(k);
-      while (stack.length) {
-        const c = stack.pop();
-        comp.push(c);
-        for (const nb of this.neighbors(c)) {
-          if (nb.owner === h.owner && !seen.has(key(nb.q, nb.r))) {
-            seen.add(key(nb.q, nb.r));
-            stack.push(nb);
-          }
+  componentFrom(start, seen) {
+    const comp = [];
+    const stack = [start];
+    seen.add(key(start.q, start.r));
+    while (stack.length) {
+      const c = stack.pop();
+      comp.push(c);
+      for (const nb of this.neighbors(c)) {
+        if (nb.owner === start.owner && !seen.has(key(nb.q, nb.r))) {
+          seen.add(key(nb.q, nb.r));
+          stack.push(nb);
         }
       }
+    }
+    return comp;
+  }
+
+  recomputeProvinces() {
+    const seen = new Set();
+    for (const [kk, h] of this.hexes) {
+      if (h.owner === null || seen.has(kk)) continue;
+      const comp = this.componentFrom(h, seen);
       if (comp.length >= 2) {
         const caps = comp.filter((x) => x.building === 'castle');
         let money = 0;
@@ -237,7 +227,6 @@ class Game {
         cap.money = money;
         for (const c of comp) if (c !== cap) c.money = 0;
       } else {
-        // lone hex: no province, no money
         for (const c of comp) {
           if (c.building === 'castle') c.building = null;
           c.money = 0;
@@ -256,21 +245,8 @@ class Game {
   }
 
   provinceOf(hex) {
-    // component containing hex (same owner), returns {capital, members} or null
     if (hex.owner === null) return null;
-    const comp = [];
-    const seen = new Set([key(hex.q, hex.r)]);
-    const stack = [hex];
-    while (stack.length) {
-      const c = stack.pop();
-      comp.push(c);
-      for (const nb of this.neighbors(c)) {
-        if (nb.owner === hex.owner && !seen.has(key(nb.q, nb.r))) {
-          seen.add(key(nb.q, nb.r));
-          stack.push(nb);
-        }
-      }
-    }
+    const comp = this.componentFrom(hex, new Set());
     const capital = comp.find((x) => x.building === 'castle') || null;
     return { capital, members: comp };
   }
@@ -284,7 +260,6 @@ class Game {
     return d;
   }
 
-  /** Protection of a hex against attackers (from its own owner). */
   defenseOf(hex) {
     if (hex.owner === null) return 0;
     let d = this.hexSelfDefense(hex);
@@ -303,18 +278,18 @@ class Game {
 
   beginTurn() {
     const me = this.current;
+    this.undoStack = [];
 
-    // 1. gravestones owned by current player turn into trees
     for (const h of this.hexes.values()) {
-      if (h.gravestone) { h.gravestone = false; h.tree = true; }
+      if (h.gravestone) {
+        h.gravestone = false;
+        if (this.treesEnabled) h.tree = true;
+      }
     }
-
-    // 2. trees spread a little onto empty adjacent hexes
-    this.spreadTrees();
+    if (this.treesEnabled) this.spreadTrees();
 
     this.recomputeProvinces();
 
-    // 3. income / starvation for current player's provinces
     for (const prov of this.getProvinces()) {
       if (!prov.capital || prov.capital.owner !== me) continue;
       let income = 0;
@@ -323,61 +298,50 @@ class Game {
       for (const h of prov.members) {
         if (h.tree) income -= 1; else income += 1;
         if (h.building === 'farm') farms += 1;
-        if (h.unit) upkeep += UPKEEP[h.unit.level] || 0;
+        if (h.building && BUILDING_UPKEEP[h.building]) upkeep += BUILDING_UPKEEP[h.building];
+        if (h.unit) upkeep += unitUpkeep(h.unit);
       }
       income += farms * 4 - upkeep;
       prov.capital.money += income;
       if (prov.capital.money < 0) {
-        // starvation: all units in the province die
         prov.capital.money = 0;
-        for (const h of prov.members) {
-          if (h.unit) { h.unit = null; h.gravestone = true; }
-        }
+        for (const h of prov.members) if (h.unit) { h.unit = null; h.gravestone = true; }
       }
     }
 
-    // 4. refresh movement for current player's units
     for (const h of this.hexes.values()) {
-      if (h.owner === me && h.unit) h.unit.moved = false;
+      if (h.owner === me) {
+        if (h.unit) h.unit.moved = false;
+        if (h.building === 'ballista') h.fired = false;
+      }
     }
   }
 
   spreadTrees() {
     const newTrees = [];
     for (const h of this.hexes.values()) {
-      if (!h.tree) continue;
-      if (Math.random() > 0.15) continue;
+      if (!h.tree || Math.random() > 0.15) continue;
       const cands = this.neighbors(h).filter(
         (n) => !n.tree && !n.gravestone && !n.building && !n.unit,
       );
-      if (cands.length) {
-        newTrees.push(cands[Math.floor(Math.random() * cands.length)]);
-      }
+      if (cands.length) newTrees.push(cands[Math.floor(Math.random() * cands.length)]);
     }
     for (const n of newTrees) n.tree = true;
   }
 
   advanceTurn() {
-    // eliminate players with no hexes
     for (const p of this.players) p.alive = this.playerHasHexes(p.index);
-
     const aliveCount = this.players.filter((p) => p.alive).length;
     if (aliveCount <= 1) {
       this.status = 'finished';
       this.winner = this.players.find((p) => p.alive) || null;
       return;
     }
-
     let next = this.current;
-    do {
-      next = (next + 1) % this.players.length;
-    } while (!this.players[next].alive);
-
-    if (next <= this.current) this.turnCount += 1; // wrapped around -> new round
+    do { next = (next + 1) % this.players.length; } while (!this.players[next].alive);
+    if (next <= this.current) this.turnCount += 1;
     this.current = next;
     this.beginTurn();
-
-    // check again in case beginTurn changed things
     const stillAlive = this.players.filter((p) => this.playerHasHexes(p.index));
     if (stillAlive.length <= 1) {
       this.status = 'finished';
@@ -385,26 +349,65 @@ class Game {
     }
   }
 
+  // ---- undo ----------------------------------------------------------------
+
+  snapshot() {
+    const m = {};
+    for (const [kk, h] of this.hexes) {
+      m[kk] = {
+        owner: h.owner, building: h.building,
+        unit: h.unit ? { ...h.unit } : null,
+        tree: h.tree, gravestone: h.gravestone, money: h.money, fired: h.fired,
+      };
+    }
+    return m;
+  }
+
+  restore(m) {
+    for (const [kk, h] of this.hexes) {
+      const s = m[kk];
+      if (!s) continue;
+      h.owner = s.owner; h.building = s.building;
+      h.unit = s.unit ? { ...s.unit } : null;
+      h.tree = s.tree; h.gravestone = s.gravestone; h.money = s.money; h.fired = s.fired;
+    }
+  }
+
   // ---- actions -------------------------------------------------------------
 
   fail(msg) { this.lastError = msg; return false; }
 
-  /** Entry point used by the server. Returns true on success. */
   applyAction(playerIndex, action) {
     this.lastError = null;
     if (this.status !== 'playing') return this.fail('Игра завершена');
     if (playerIndex !== this.current) return this.fail('Сейчас не ваш ход');
     if (!action || typeof action.type !== 'string') return this.fail('Некорректное действие');
 
+    if (action.type === 'endTurn') { this.advanceTurn(); return true; }
+    if (action.type === 'undo') return this.actUndo();
+
+    const reversible = ['moveUnit', 'buyUnit', 'buildFarm', 'buildTower', 'buildStrongTower', 'buildBallista', 'fireBallista'];
+    if (!reversible.includes(action.type)) return this.fail('Неизвестное действие');
+
+    const snap = this.snapshot();
+    let ok = false;
     switch (action.type) {
-      case 'moveUnit': return this.actMoveUnit(playerIndex, action);
-      case 'buyUnit': return this.actBuyUnit(playerIndex, action);
-      case 'buildFarm': return this.actBuild(playerIndex, action, 'farm');
-      case 'buildTower': return this.actBuild(playerIndex, action, 'tower');
-      case 'buildStrongTower': return this.actBuild(playerIndex, action, 'strongTower');
-      case 'endTurn': this.advanceTurn(); return true;
-      default: return this.fail('Неизвестное действие');
+      case 'moveUnit': ok = this.actMoveUnit(playerIndex, action); break;
+      case 'buyUnit': ok = this.actBuyUnit(playerIndex, action); break;
+      case 'buildFarm': ok = this.actBuild(playerIndex, action, 'farm'); break;
+      case 'buildTower': ok = this.actBuild(playerIndex, action, 'tower'); break;
+      case 'buildStrongTower': ok = this.actBuild(playerIndex, action, 'strongTower'); break;
+      case 'buildBallista': ok = this.actBuild(playerIndex, action, 'ballista'); break;
+      case 'fireBallista': ok = this.actFireBallista(playerIndex, action); break;
     }
+    if (ok) this.undoStack.push(snap);
+    return ok;
+  }
+
+  actUndo() {
+    if (!this.undoStack.length) return this.fail('Нечего отменять');
+    this.restore(this.undoStack.pop());
+    return true;
   }
 
   resolveHex(coord) {
@@ -412,48 +415,45 @@ class Game {
     return this.hex(coord.q, coord.r) || null;
   }
 
-  /** Place a unit of `level` from province `prov` onto `to`. Handles move/merge/capture. */
-  placeUnit(player, prov, from, to, level, freshlyBought) {
-    const inProvince = prov.members.includes(to);
-    const adjacentToProvince = !inProvince &&
-      prov.members.some((m) => this.neighbors(m).includes(to));
+  addMoney(prov, amount) { if (prov.capital) prov.capital.money += amount; }
 
-    if (!inProvince && !adjacentToProvince) return this.fail('Слишком далеко');
+  /** Place a unit (spec = {level, kind}) from province onto `to`. */
+  placeUnit(player, prov, from, to, spec, fresh) {
+    const inProvince = prov.members.includes(to);
+    const range = spec.kind === 'horseman' ? HORSEMAN_RANGE : 1;
+    if (!inProvince) {
+      const dist = Math.min(...prov.members.map((m) => hexDistance(m, to)));
+      if (dist > range) return this.fail('Слишком далеко');
+    }
 
     if (inProvince) {
       if (to.unit) {
-        // merge
-        const combined = level + to.unit.level;
+        if (spec.kind === 'horseman' || to.unit.kind === 'horseman') {
+          return this.fail('Всадник не объединяется');
+        }
+        const combined = spec.level + to.unit.level;
         if (combined > 4) return this.fail('Юниты не объединяются (макс. уровень 4)');
         const mergedMoved = (from ? from.unit.moved : false) || to.unit.moved;
-        to.unit = { level: combined, moved: mergedMoved };
+        to.unit = { level: combined, kind: deriveKind(combined), moved: mergedMoved };
         if (from) from.unit = null;
         return true;
       }
-      // empty own hex (possibly with own tree / own building underneath)
-      const movedFlag = freshlyBought ? false : true;
+      const movedFlag = fresh ? false : true;
       if (to.tree) { to.tree = false; this.addMoney(prov, 3); }
-      to.unit = { level, moved: movedFlag };
+      to.unit = { level: spec.level, kind: spec.kind, moved: movedFlag };
       if (from) from.unit = null;
       return true;
     }
 
-    // capture attempt
     const def = this.defenseOf(to);
-    if (level <= def) return this.fail('Клетка слишком хорошо защищена');
+    if (spec.level <= def) return this.fail('Клетка слишком хорошо защищена');
     if (to.tree) this.addMoney(prov, 3);
     to.owner = player;
-    to.tree = false;
-    to.gravestone = false;
-    to.building = null;
-    to.unit = { level, moved: true };
+    to.tree = false; to.gravestone = false; to.building = null; to.fired = false;
+    to.unit = { level: spec.level, kind: spec.kind, moved: true };
     if (from) from.unit = null;
     this.recomputeProvinces();
     return true;
-  }
-
-  addMoney(prov, amount) {
-    if (prov.capital) prov.capital.money += amount;
   }
 
   actMoveUnit(player, action) {
@@ -464,7 +464,7 @@ class Game {
     if (from.unit.moved) return this.fail('Этот юнит уже ходил');
     if (from === to) return this.fail('Юнит уже здесь');
     const prov = this.provinceOf(from);
-    return this.placeUnit(player, prov, from, to, from.unit.level, false);
+    return this.placeUnit(player, prov, from, to, from.unit, false);
   }
 
   actBuyUnit(player, action) {
@@ -475,23 +475,34 @@ class Game {
     }
     if (!to) return this.fail('Нет такой клетки');
     const prov = this.provinceOf(cap);
-    if (cap.money < PEASANT_COST) return this.fail('Недостаточно монет');
+
+    let spec;
+    let cost;
+    if (action.kind === 'horseman') {
+      spec = { level: 2, kind: 'horseman' };
+      cost = HORSEMAN_COST;
+    } else {
+      const level = Math.min(Math.max(action.level | 0, 1), 4);
+      spec = { level, kind: deriveKind(level) };
+      cost = unitCost(level);
+    }
+    if (cap.money < cost) return this.fail('Недостаточно монет');
 
     // validate placement before charging
     const inProvince = prov.members.includes(to);
-    const adjacent = !inProvince && prov.members.some((m) => this.neighbors(m).includes(to));
-    if (!inProvince && !adjacent) return this.fail('Слишком далеко от провинции');
-    if (inProvince && to.unit && to.unit.level + 1 > 4) {
-      return this.fail('Юниты не объединяются (макс. уровень 4)');
-    }
     if (!inProvince) {
-      const def = this.defenseOf(to);
-      if (1 <= def) return this.fail('Свежий крестьянин не пробьёт защиту');
+      const range = spec.kind === 'horseman' ? HORSEMAN_RANGE : 1;
+      const dist = Math.min(...prov.members.map((m) => hexDistance(m, to)));
+      if (dist > range) return this.fail('Слишком далеко от провинции');
+      if (spec.level <= this.defenseOf(to)) return this.fail('Клетка слишком хорошо защищена');
+    } else if (to.unit) {
+      if (spec.kind === 'horseman' || to.unit.kind === 'horseman') return this.fail('Всадник не объединяется');
+      if (spec.level + to.unit.level > 4) return this.fail('Юниты не объединяются (макс. уровень 4)');
     }
 
-    cap.money -= PEASANT_COST;
-    const ok = this.placeUnit(player, prov, null, to, 1, true);
-    if (!ok) { cap.money += PEASANT_COST; } // refund on unexpected failure
+    cap.money -= cost;
+    const ok = this.placeUnit(player, prov, null, to, spec, true);
+    if (!ok) cap.money += cost;
     return ok;
   }
 
@@ -512,26 +523,49 @@ class Game {
     if (type === 'farm') {
       const farms = prov.members.filter((m) => m.building === 'farm').length;
       cost = FARM_BASE + FARM_STEP * farms;
-      // farms must be adjacent to capital or another farm
       const adjOk = this.neighbors(to).some(
         (n) => n.owner === player && (n.building === 'castle' || n.building === 'farm'),
       );
       if (!adjOk) return this.fail('Ферма строится рядом со столицей или другой фермой');
     } else if (type === 'tower') {
       cost = TOWER_COST;
-    } else {
+    } else if (type === 'strongTower') {
       cost = STRONG_TOWER_COST;
+    } else if (type === 'ballista') {
+      cost = BALLISTA_COST;
+    } else {
+      return this.fail('Неизвестная постройка');
     }
 
     if (cap.money < cost) return this.fail('Недостаточно монет');
     cap.money -= cost;
     to.building = type;
+    if (type === 'ballista') to.fired = false;
+    return true;
+  }
+
+  actFireBallista(player, action) {
+    const from = this.resolveHex(action.from);
+    const to = this.resolveHex(action.to);
+    if (!from || from.owner !== player || from.building !== 'ballista') {
+      return this.fail('Нет вашей баллисты');
+    }
+    if (from.fired) return this.fail('Баллиста уже стреляла в этот ход');
+    if (!to) return this.fail('Нет такой клетки');
+    if (to.owner === player) return this.fail('Нельзя бить по своим');
+    if (hexDistance(from, to) > BALLISTA_RANGE) return this.fail('Цель вне радиуса');
+    if (!to.unit) return this.fail('В цели нет юнита');
+    if (to.unit.level > BALLISTA_LEVEL) return this.fail('Слишком сильный юнит (нужен 4-й уровень)');
+
+    to.unit = null;
+    to.gravestone = true;
+    from.fired = true;
+    this.recomputeProvinces();
     return true;
   }
 
   // ---- serialization -------------------------------------------------------
 
-  /** Build a client-facing snapshot of the game. */
   serialize() {
     const provinces = this.getProvinces();
     const provByHex = new Map();
@@ -544,7 +578,8 @@ class Game {
       for (const h of prov.members) {
         if (h.tree) income -= 1; else income += 1;
         if (h.building === 'farm') farms += 1;
-        if (h.unit) upkeep += UPKEEP[h.unit.level] || 0;
+        if (h.building && BUILDING_UPKEEP[h.building]) upkeep += BUILDING_UPKEEP[h.building];
+        if (h.unit) upkeep += unitUpkeep(h.unit);
         provByHex.set(key(h.q, h.r), key(prov.capital.q, prov.capital.r));
       }
       income += farms * 4 - upkeep;
@@ -560,13 +595,9 @@ class Game {
     const hexes = [];
     for (const h of this.hexes.values()) {
       hexes.push({
-        q: h.q,
-        r: h.r,
-        owner: h.owner,
-        building: h.building,
-        unit: h.unit ? { level: h.unit.level, moved: h.unit.moved } : null,
-        tree: h.tree,
-        gravestone: h.gravestone,
+        q: h.q, r: h.r, owner: h.owner, building: h.building,
+        unit: h.unit ? { level: h.unit.level, moved: h.unit.moved, kind: h.unit.kind } : null,
+        tree: h.tree, gravestone: h.gravestone, fired: !!h.fired,
         capital: h.building === 'castle',
         province: provByHex.get(key(h.q, h.r)) || null,
       });
@@ -582,6 +613,7 @@ class Game {
       status: this.status,
       winner: this.winner ? this.winner.index : null,
       turn: this.turnCount,
+      canUndo: this.status === 'playing' && this.undoStack.length > 0,
     };
   }
 }

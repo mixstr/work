@@ -56,9 +56,23 @@ let provMembers = new Map(); // provinceId -> [hex]
 
 let selectedProvince = null; // capital coord {q,r}
 let selectedUnit = null;     // hex coord {q,r}
-let hand = null;             // {kind}
+let selectedBallista = null; // hex coord {q,r}
+let hand = null;             // {kind, level}
 let reachable = new Set();
 let capturable = new Set();
+let fireTargets = new Set();
+let turnDeadline = null;
+
+const UNIT_DEFS = [
+  { kind: 'peasant', level: 1, cost: 10, name: 'Крестьянин' },
+  { kind: 'spearman', level: 2, cost: 20, name: 'Копейщик' },
+  { kind: 'baron', level: 3, cost: 30, name: 'Барон' },
+  { kind: 'knight', level: 4, cost: 40, name: 'Рыцарь' },
+  { kind: 'horseman', level: 2, cost: 25, name: 'Всадник' },
+];
+const UNIT_KINDS = UNIT_DEFS.map((u) => u.kind);
+const isUnitKind = (kind) => UNIT_KINDS.includes(kind);
+function unitDef(kind) { return UNIT_DEFS.find((u) => u.kind === kind); }
 
 const cam = { x: 0, y: 0, scale: 1, ready: false };
 
@@ -80,7 +94,9 @@ function onServer(msg) {
       if (!msg.started) show('lobby');
       break;
     case 'state':
-      YOU = msg.you; ingestState(msg.game); show('game'); break;
+      YOU = msg.you; turnDeadline = msg.turnDeadline || null; ingestState(msg.game); show('game'); break;
+    case 'gameEnded':
+      state = null; clearSelection(); $('overlay').classList.add('hidden'); show('lobby'); break;
     case 'error':
       showError(msg.message); break;
   }
@@ -99,6 +115,7 @@ $('btnCreate').onclick = () => {
   net({
     type: 'create', name: nameInput(),
     width: +$('optW').value, height: +$('optH').value, maxPlayers: +$('optMax').value,
+    trees: $('optTrees').checked, turnTimer: +$('optTimer').value,
   });
 };
 $('btnJoin').onclick = () => {
@@ -141,9 +158,11 @@ function renderLobby(msg) {
     $('lobW').value = msg.opts.width;
     $('lobH').value = msg.opts.height;
     $('lobMax').value = msg.opts.maxPlayers;
+    $('lobTrees').checked = msg.opts.trees !== false;
+    $('lobTimer').value = String(msg.opts.turnTimer || 0);
     configEcho = false;
   }
-  for (const id of ['lobW', 'lobH', 'lobMax']) $(id).disabled = !msg.host;
+  for (const id of ['lobW', 'lobH', 'lobMax', 'lobTrees', 'lobTimer']) $(id).disabled = !msg.host;
   $('settingsHint').textContent = msg.host
     ? 'Можно менять до старта.'
     : 'Настройки задаёт хост.';
@@ -156,9 +175,10 @@ function sendConfig() {
   net({
     type: 'config',
     width: +$('lobW').value, height: +$('lobH').value, maxPlayers: +$('lobMax').value,
+    trees: $('lobTrees').checked, turnTimer: +$('lobTimer').value,
   });
 }
-for (const id of ['lobW', 'lobH', 'lobMax']) $(id).addEventListener('change', sendConfig);
+for (const id of ['lobW', 'lobH', 'lobMax', 'lobTrees', 'lobTimer']) $(id).addEventListener('change', sendConfig);
 
 function escapeHtml(s) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
@@ -183,13 +203,40 @@ function ingestState(g) {
     const h = hexMap.get(k(selectedUnit.q, selectedUnit.r));
     if (!h || h.owner !== YOU || !h.unit) { selectedUnit = null; }
   }
+  if (selectedBallista) {
+    const h = hexMap.get(k(selectedBallista.q, selectedBallista.r));
+    if (!h || h.owner !== YOU || h.building !== 'ballista' || h.fired) selectedBallista = null;
+  }
   if (selectedProvince) {
     const h = hexMap.get(k(selectedProvince.q, selectedProvince.r));
     if (!h || !h.capital || h.owner !== YOU) selectedProvince = null;
   }
   computeHighlights();
   renderPanel();
+  startTimerTicker();
   draw();
+}
+
+// turn timer countdown display
+let timerInterval = null;
+function startTimerTicker() {
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  const tag = $('timerTag');
+  if (!turnDeadline || !state || state.status !== 'playing') { tag.classList.add('hidden'); return; }
+  const tick = () => {
+    if (!state || state.status !== 'playing' || !turnDeadline) {
+      tag.classList.add('hidden');
+      if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+      return;
+    }
+    const left = Math.max(0, Math.ceil((turnDeadline - Date.now()) / 1000));
+    tag.textContent = '⏱ ' + left + 'с';
+    tag.classList.remove('hidden');
+    tag.classList.toggle('warn', left <= 10);
+    if (left <= 0 && timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  };
+  tick();
+  timerInterval = setInterval(tick, 500);
 }
 
 // ===========================================================================
@@ -252,6 +299,8 @@ function resize() {
 window.addEventListener('resize', resize);
 
 const NEUTRAL = '#7c8aa0';
+const HEX_DIRS = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
+const EDGE_FOR_DIR = [0, 5, 4, 3, 2, 1]; // which polygon edge faces each neighbour dir
 
 function color(owner) {
   if (owner === null || owner === undefined) return NEUTRAL;
@@ -284,9 +333,13 @@ function draw() {
     ctx.fill();
   }
 
+  // highlight own territory during your turn
+  if (isMyTurn()) drawTerritoryGlow(R);
+
   // highlights
   drawHighlightSet(reachable, 'rgba(255,255,255,0.28)', R);
   drawHighlightSet(capturable, 'rgba(255,80,60,0.45)', R);
+  drawHighlightSet(fireTargets, 'rgba(255,150,40,0.55)', R);
 
   // selected province outline
   if (selectedProvince) {
@@ -315,6 +368,12 @@ function draw() {
     ctx.strokeStyle = '#ffe066'; ctx.lineWidth = Math.max(2, R * 0.1);
     ctx.beginPath(); ctx.arc(s.x, s.y, R * 0.55, 0, Math.PI * 2); ctx.stroke();
   }
+  // selected ballista ring
+  if (selectedBallista) {
+    const w = hexToWorld(selectedBallista.q, selectedBallista.r); const s = worldToScreen(w.x, w.y);
+    ctx.strokeStyle = '#ff9028'; ctx.lineWidth = Math.max(2, R * 0.1);
+    ctx.beginPath(); ctx.arc(s.x, s.y, R * 0.6, 0, Math.PI * 2); ctx.stroke();
+  }
 
   // province money labels
   if (R > 18) {
@@ -326,6 +385,35 @@ function draw() {
       ctx.fillText('💰' + p.money, s.x, s.y - R * 0.78);
       ctx.fillStyle = '#fff';
       ctx.fillText('💰' + p.money, s.x, s.y - R * 0.82);
+    }
+  }
+}
+
+function drawTerritoryGlow(R) {
+  // soft tint on owned hexes
+  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  for (const h of state.hexes) {
+    if (h.owner !== YOU) continue;
+    const w = hexToWorld(h.q, h.r); const s = worldToScreen(w.x, w.y);
+    const pts = hexCorners(s.x, s.y, R * 0.99);
+    ctx.beginPath();
+    pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+    ctx.closePath(); ctx.fill();
+  }
+  // bright outline along the territory border
+  ctx.strokeStyle = 'rgba(255,236,140,0.95)';
+  ctx.lineWidth = Math.max(2, R * 0.09);
+  ctx.lineCap = 'round';
+  for (const h of state.hexes) {
+    if (h.owner !== YOU) continue;
+    const w = hexToWorld(h.q, h.r); const s = worldToScreen(w.x, w.y);
+    const pts = hexCorners(s.x, s.y, R * 0.99);
+    for (let j = 0; j < 6; j++) {
+      const nb = hexMap.get(k(h.q + HEX_DIRS[j][0], h.r + HEX_DIRS[j][1]));
+      if (nb && nb.owner === YOU) continue; // interior edge -> skip
+      const e = EDGE_FOR_DIR[j];
+      const a = pts[e], b = pts[(e + 1) % 6];
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
     }
   }
 }
@@ -380,10 +468,35 @@ function drawContent(h, cx, cy, R) {
     roundRect(cx - R * 0.3, cy - R * 0.22, R * 0.6, R * 0.44, R * 0.06); ctx.fill();
     ctx.strokeStyle = '#7a5b1e'; ctx.lineWidth = 2;
     for (const dx of [-0.15, 0.15]) { ctx.beginPath(); ctx.moveTo(cx + dx * R, cy - R * 0.2); ctx.lineTo(cx + dx * R, cy + R * 0.2); ctx.stroke(); }
+  } else if (h.building === 'ballista') {
+    drawBallista(ctx, cx, cy, R, h.fired);
   }
 
   // unit on top
-  if (h.unit) drawUnit(h, cx, cy, R);
+  if (h.unit) drawUnit(ctx, h.unit, cx, cy, R);
+}
+
+function drawBallista(g, cx, cy, R, fired) {
+  g.globalAlpha = fired ? 0.5 : 1;
+  // base + wheels
+  g.fillStyle = '#5d4037';
+  g.beginPath(); g.arc(cx - R * 0.22, cy + R * 0.28, R * 0.13, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(cx + R * 0.22, cy + R * 0.28, R * 0.13, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#7a5230';
+  g.fillRect(cx - R * 0.34, cy + R * 0.1, R * 0.68, R * 0.16);
+  // the bow arms (V)
+  g.strokeStyle = '#caa44a'; g.lineWidth = Math.max(2, R * 0.12); g.lineCap = 'round';
+  g.beginPath();
+  g.moveTo(cx - R * 0.36, cy - R * 0.32);
+  g.lineTo(cx, cy + R * 0.06);
+  g.lineTo(cx + R * 0.36, cy - R * 0.32);
+  g.stroke();
+  // bowstring + bolt
+  g.strokeStyle = '#e8eef7'; g.lineWidth = Math.max(1, R * 0.04);
+  g.beginPath(); g.moveTo(cx - R * 0.36, cy - R * 0.32); g.lineTo(cx + R * 0.36, cy - R * 0.32); g.stroke();
+  g.strokeStyle = '#9b3a2a'; g.lineWidth = Math.max(2, R * 0.08);
+  g.beginPath(); g.moveTo(cx, cy - R * 0.05); g.lineTo(cx, cy - R * 0.5); g.stroke();
+  g.globalAlpha = 1;
 }
 
 function drawTower(cx, cy, R, col, count) {
@@ -404,20 +517,121 @@ function drawTower(cx, cy, R, col, count) {
   }
 }
 
-function drawUnit(h, cx, cy, R) {
-  const lv = h.unit.level;
-  ctx.globalAlpha = h.unit.moved ? 0.55 : 1;
-  // body
-  ctx.fillStyle = '#f4f6fa';
-  ctx.strokeStyle = '#1b2940';
-  ctx.lineWidth = Math.max(1.5, R * 0.05);
-  ctx.beginPath(); ctx.arc(cx, cy, R * 0.4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  // level number
-  ctx.fillStyle = '#1b2940';
-  ctx.font = `bold ${Math.round(R * 0.5)}px system-ui`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(String(lv), cx, cy + R * 0.02);
-  ctx.globalAlpha = 1;
+// Distinct sprite per unit. `unit` = {kind, level, moved}.
+function drawUnit(g, unit, cx, cy, R, ignoreMoved) {
+  const kind = unit.kind || ['peasant', 'spearman', 'baron', 'knight'][unit.level - 1];
+  g.save();
+  g.globalAlpha = (!ignoreMoved && unit.moved) ? 0.5 : 1;
+  if (kind === 'horseman') drawHorseman(g, cx, cy, R);
+  else drawPerson(g, cx, cy, R, kind);
+  g.restore();
+}
+
+const SKIN = '#f0d0a8';
+const CLOTH = { peasant: '#8d9aa8', spearman: '#5b86c4', baron: '#9b59b6', knight: '#cfd6e0' };
+
+function drawPerson(g, cx, cy, R, kind) {
+  const body = CLOTH[kind] || '#8d9aa8';
+  g.lineWidth = Math.max(1, R * 0.04);
+  g.strokeStyle = '#1b2940';
+
+  // torso
+  g.fillStyle = body;
+  g.beginPath();
+  g.moveTo(cx - R * 0.22, cy + R * 0.42);
+  g.lineTo(cx - R * 0.16, cy - R * 0.02);
+  g.lineTo(cx + R * 0.16, cy - R * 0.02);
+  g.lineTo(cx + R * 0.22, cy + R * 0.42);
+  g.closePath(); g.fill(); g.stroke();
+
+  // head
+  g.fillStyle = SKIN;
+  g.beginPath(); g.arc(cx, cy - R * 0.18, R * 0.17, 0, Math.PI * 2); g.fill(); g.stroke();
+
+  if (kind === 'peasant') {
+    // a hoe over the shoulder
+    g.strokeStyle = '#7a5230'; g.lineWidth = Math.max(2, R * 0.07);
+    g.beginPath(); g.moveTo(cx + R * 0.05, cy + R * 0.3); g.lineTo(cx + R * 0.3, cy - R * 0.32); g.stroke();
+    g.strokeStyle = '#9aa3b2'; g.beginPath();
+    g.moveTo(cx + R * 0.3, cy - R * 0.32); g.lineTo(cx + R * 0.42, cy - R * 0.3); g.stroke();
+  } else if (kind === 'spearman') {
+    // a spear
+    g.strokeStyle = '#7a5230'; g.lineWidth = Math.max(2, R * 0.06);
+    g.beginPath(); g.moveTo(cx + R * 0.28, cy + R * 0.42); g.lineTo(cx + R * 0.28, cy - R * 0.48); g.stroke();
+    g.fillStyle = '#cfd6e0';
+    g.beginPath();
+    g.moveTo(cx + R * 0.28, cy - R * 0.58);
+    g.lineTo(cx + R * 0.18, cy - R * 0.42);
+    g.lineTo(cx + R * 0.38, cy - R * 0.42);
+    g.closePath(); g.fill();
+  } else if (kind === 'baron') {
+    // a sword + a crown
+    g.strokeStyle = '#dfe6f0'; g.lineWidth = Math.max(2, R * 0.07);
+    g.beginPath(); g.moveTo(cx + R * 0.28, cy + R * 0.42); g.lineTo(cx + R * 0.28, cy - R * 0.34); g.stroke();
+    g.strokeStyle = '#caa44a'; g.lineWidth = Math.max(2, R * 0.06);
+    g.beginPath(); g.moveTo(cx + R * 0.18, cy + R * 0.18); g.lineTo(cx + R * 0.38, cy + R * 0.18); g.stroke();
+    g.fillStyle = '#ffd84a';
+    g.beginPath();
+    g.moveTo(cx - R * 0.17, cy - R * 0.3);
+    g.lineTo(cx - R * 0.17, cy - R * 0.45);
+    g.lineTo(cx - R * 0.06, cy - R * 0.34);
+    g.lineTo(cx, cy - R * 0.48);
+    g.lineTo(cx + R * 0.06, cy - R * 0.34);
+    g.lineTo(cx + R * 0.17, cy - R * 0.45);
+    g.lineTo(cx + R * 0.17, cy - R * 0.3);
+    g.closePath(); g.fill(); g.stroke();
+  } else if (kind === 'knight') {
+    // helmet over the head + shield
+    g.fillStyle = '#b9c2d0';
+    g.beginPath(); g.arc(cx, cy - R * 0.2, R * 0.2, Math.PI, 0); g.fill(); g.stroke();
+    g.fillRect(cx - R * 0.2, cy - R * 0.22, R * 0.4, R * 0.12);
+    g.strokeStyle = '#1b2940'; g.strokeRect(cx - R * 0.2, cy - R * 0.22, R * 0.4, R * 0.12);
+    g.fillStyle = '#1b2940';
+    g.fillRect(cx - R * 0.1, cy - R * 0.16, R * 0.2, R * 0.04); // visor slit
+    // shield
+    g.fillStyle = '#e6473a';
+    g.beginPath();
+    g.moveTo(cx - R * 0.42, cy - R * 0.02);
+    g.lineTo(cx - R * 0.2, cy - R * 0.02);
+    g.lineTo(cx - R * 0.2, cy + R * 0.22);
+    g.lineTo(cx - R * 0.31, cy + R * 0.34);
+    g.lineTo(cx - R * 0.42, cy + R * 0.22);
+    g.closePath(); g.fill(); g.stroke();
+  }
+}
+
+function drawHorseman(g, cx, cy, R) {
+  g.lineWidth = Math.max(1, R * 0.04);
+  g.strokeStyle = '#1b2940';
+  // horse body
+  g.fillStyle = '#7a5230';
+  g.beginPath(); g.ellipse(cx, cy + R * 0.16, R * 0.4, R * 0.2, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+  // legs
+  g.strokeStyle = '#5d4037'; g.lineWidth = Math.max(2, R * 0.06);
+  for (const dx of [-0.28, -0.1, 0.12, 0.3]) {
+    g.beginPath(); g.moveTo(cx + dx * R, cy + R * 0.28); g.lineTo(cx + dx * R, cy + R * 0.5); g.stroke();
+  }
+  // neck + head
+  g.fillStyle = '#7a5230'; g.strokeStyle = '#1b2940'; g.lineWidth = Math.max(1, R * 0.04);
+  g.beginPath();
+  g.moveTo(cx + R * 0.3, cy + R * 0.16);
+  g.lineTo(cx + R * 0.5, cy - R * 0.22);
+  g.lineTo(cx + R * 0.62, cy - R * 0.18);
+  g.lineTo(cx + R * 0.44, cy + R * 0.1);
+  g.closePath(); g.fill(); g.stroke();
+  // rider
+  g.fillStyle = '#5b86c4';
+  g.beginPath();
+  g.moveTo(cx - R * 0.14, cy + R * 0.04);
+  g.lineTo(cx - R * 0.08, cy - R * 0.26);
+  g.lineTo(cx + R * 0.08, cy - R * 0.26);
+  g.lineTo(cx + R * 0.12, cy + R * 0.04);
+  g.closePath(); g.fill(); g.stroke();
+  g.fillStyle = SKIN;
+  g.beginPath(); g.arc(cx, cy - R * 0.36, R * 0.13, 0, Math.PI * 2); g.fill(); g.stroke();
+  // lance
+  g.strokeStyle = '#dfe6f0'; g.lineWidth = Math.max(2, R * 0.05);
+  g.beginPath(); g.moveTo(cx - R * 0.1, cy - R * 0.1); g.lineTo(cx + R * 0.5, cy - R * 0.5); g.stroke();
 }
 
 function roundRect(x, y, w, h, r) {
@@ -437,7 +651,7 @@ function selfDef(h) {
   let d = 0;
   if (h.building === 'castle') d = Math.max(d, 1);
   else if (h.building === 'tower') d = Math.max(d, 2);
-  else if (h.building === 'strongTower') d = Math.max(d, 3);
+  else if (h.building === 'strongTower' || h.building === 'ballista') d = Math.max(d, 3);
   if (h.unit) d = Math.max(d, h.unit.level);
   return d;
 }
@@ -454,30 +668,54 @@ function defenseOf(h) {
   return d;
 }
 
+function hexDist(a, b) {
+  return (Math.abs(a.q - b.q) + Math.abs(a.r - b.r) + Math.abs(a.q + a.r - b.q - b.r)) / 2;
+}
+
 function computeHighlights() {
   reachable = new Set();
   capturable = new Set();
-  if (!selectedUnit || !isMyTurn()) return;
+  fireTargets = new Set();
+  if (!isMyTurn()) return;
+
+  // ballista targets
+  if (selectedBallista) {
+    const bh = hexMap.get(k(selectedBallista.q, selectedBallista.r));
+    if (bh && bh.building === 'ballista' && !bh.fired) {
+      for (const h of state.hexes) {
+        if (h.owner === YOU || !h.unit) continue;
+        if (h.unit.level > 3) continue; // knight is too tough
+        if (hexDist(bh, h) <= 2) fireTargets.add(k(h.q, h.r));
+      }
+    }
+    return;
+  }
+
+  if (!selectedUnit) return;
   const uh = hexMap.get(k(selectedUnit.q, selectedUnit.r));
   if (!uh || !uh.unit || uh.unit.moved) return;
   const lv = uh.unit.level;
+  const isHorse = uh.unit.kind === 'horseman';
+  const range = isHorse ? 2 : 1;
   const members = provMembers.get(uh.province) || [uh];
   const memberSet = new Set(members.map((m) => k(m.q, m.r)));
+
   // internal moves / merges
   for (const m of members) {
     if (k(m.q, m.r) === k(uh.q, uh.r)) continue;
-    if (m.unit) { if (m.unit.level + lv <= 4) reachable.add(k(m.q, m.r)); }
-    else if (!m.building || m.building === 'farm' || m.building === 'tower' || m.building === 'strongTower' || m.building === 'castle') {
-      // can stand on own hex (buildings stay underneath); avoid stacking 2 units handled above
+    if (m.unit) {
+      if (!isHorse && m.unit.kind !== 'horseman' && m.unit.level + lv <= 4) reachable.add(k(m.q, m.r));
+    } else {
       reachable.add(k(m.q, m.r));
     }
   }
-  // captures
-  for (const m of members) {
-    for (const n of neighborsOf(m)) {
-      if (memberSet.has(k(n.q, n.r))) continue;
-      if (lv > defenseOf(n)) capturable.add(k(n.q, n.r));
-    }
+  // captures: any enemy/neutral hex within `range` of the province, level > defense
+  for (const h of state.hexes) {
+    const key = k(h.q, h.r);
+    if (memberSet.has(key)) continue;
+    let near = false;
+    for (const m of members) { if (hexDist(m, h) <= range) { near = true; break; } }
+    if (near && lv > defenseOf(h)) capturable.add(key);
   }
 }
 
@@ -579,9 +817,26 @@ function handleClick(sx, sy) {
     }
   }
 
+  // If a ballista is selected and target is in range -> fire
+  if (selectedBallista) {
+    if (fireTargets.has(k(h.q, h.r))) {
+      net({ type: 'action', action: { type: 'fireBallista', from: selectedBallista, to: { q: h.q, r: h.r } } });
+      selectedBallista = null; fireTargets.clear();
+      return;
+    }
+  }
+
   // Select own movable unit
   if (h.owner === YOU && h.unit && !h.unit.moved) {
-    selectedUnit = { q: h.q, r: h.r };
+    selectedUnit = { q: h.q, r: h.r }; selectedBallista = null;
+    if (h.province) selectedProvince = capitalCoord(h.province);
+    computeHighlights(); renderPanel(); draw();
+    return;
+  }
+
+  // Select own ballista that can still fire
+  if (h.owner === YOU && h.building === 'ballista' && !h.fired) {
+    selectedBallista = { q: h.q, r: h.r }; selectedUnit = null;
     if (h.province) selectedProvince = capitalCoord(h.province);
     computeHighlights(); renderPanel(); draw();
     return;
@@ -603,28 +858,32 @@ function capitalCoord(provId) {
 
 function selectProvince(h) {
   selectedProvince = capitalCoord(h.province);
-  selectedUnit = null; hand = null; reachable.clear(); capturable.clear();
-  setHandUI();
+  selectedUnit = null; selectedBallista = null; hand = null;
+  reachable.clear(); capturable.clear(); fireTargets.clear();
+  closeUnitMenu(); setHandUI();
   renderPanel(); draw();
 }
 
 function clearSelection() {
-  selectedProvince = null; selectedUnit = null; hand = null;
-  reachable.clear(); capturable.clear();
-  setHandUI(); renderPanel(); draw();
+  selectedProvince = null; selectedUnit = null; selectedBallista = null; hand = null;
+  reachable.clear(); capturable.clear(); fireTargets.clear();
+  closeUnitMenu(); setHandUI(); renderPanel(); draw();
 }
 
 function placeFromHand(h) {
   const prov = selectedProvince;
   const to = { q: h.q, r: h.r };
-  if (hand.kind === 'peasant') {
-    net({ type: 'action', action: { type: 'buyUnit', province: prov, to } });
+  if (isUnitKind(hand.kind)) {
+    const def = unitDef(hand.kind);
+    net({ type: 'action', action: { type: 'buyUnit', province: prov, to, kind: hand.kind, level: def.level } });
   } else if (hand.kind === 'farm') {
     net({ type: 'action', action: { type: 'buildFarm', province: prov, to } });
   } else if (hand.kind === 'tower') {
     net({ type: 'action', action: { type: 'buildTower', province: prov, to } });
   } else if (hand.kind === 'strongTower') {
     net({ type: 'action', action: { type: 'buildStrongTower', province: prov, to } });
+  } else if (hand.kind === 'ballista') {
+    net({ type: 'action', action: { type: 'buildBallista', province: prov, to } });
   }
   hand = null; setHandUI();
 }
@@ -632,16 +891,60 @@ function placeFromHand(h) {
 // ===========================================================================
 // Panel / buttons
 // ===========================================================================
-document.querySelectorAll('.buy').forEach((btn) => {
+// building buttons (have data-buy)
+document.querySelectorAll('.buy[data-buy]').forEach((btn) => {
   btn.onclick = () => {
     if (!isMyTurn()) return toast('Сейчас не ваш ход');
     if (!selectedProvince) return toast('Сначала выберите свою провинцию');
     const kind = btn.dataset.buy;
     hand = hand && hand.kind === kind ? null : { kind };
-    selectedUnit = null; reachable.clear(); capturable.clear();
-    setHandUI(); draw();
+    selectedUnit = null; selectedBallista = null;
+    reachable.clear(); capturable.clear(); fireTargets.clear();
+    closeUnitMenu(); setHandUI(); draw();
   };
 });
+
+// unit picker (opens upward)
+$('btnUnit').onclick = () => {
+  if (!isMyTurn()) return toast('Сейчас не ваш ход');
+  if (!selectedProvince) return toast('Сначала выберите свою провинцию');
+  const menu = $('unitMenu');
+  if (!menu.classList.contains('hidden')) { closeUnitMenu(); return; }
+  buildUnitMenu();
+  menu.classList.remove('hidden');
+};
+
+function closeUnitMenu() { $('unitMenu').classList.add('hidden'); }
+
+function buildUnitMenu() {
+  const menu = $('unitMenu');
+  menu.innerHTML = '';
+  const pd = provinceData();
+  for (const def of UNIT_DEFS) {
+    const opt = document.createElement('div');
+    opt.className = 'unit-opt';
+    const afford = pd && pd.money >= def.cost;
+    if (!afford) opt.setAttribute('disabled', '');
+    const cv = document.createElement('canvas');
+    cv.width = 56; cv.height = 56;
+    const g = cv.getContext('2d');
+    drawUnit(g, { kind: def.kind, level: def.level, moved: false }, 28, 30, 26, true);
+    opt.appendChild(cv);
+    const label = document.createElement('span');
+    label.textContent = def.name;
+    opt.appendChild(label);
+    const price = document.createElement('span');
+    price.className = 'price'; price.textContent = def.cost;
+    opt.appendChild(price);
+    if (afford) opt.onclick = () => {
+      hand = { kind: def.kind, level: def.level };
+      selectedUnit = null; selectedBallista = null;
+      reachable.clear(); capturable.clear(); fireTargets.clear();
+      closeUnitMenu(); setHandUI(); draw();
+    };
+    menu.appendChild(opt);
+  }
+}
 
 $('btnEnd').onclick = () => {
   if (!isMyTurn()) return;
@@ -649,11 +952,27 @@ $('btnEnd').onclick = () => {
   clearSelection();
 };
 
+$('btnUndo').onclick = () => {
+  if (!isMyTurn()) return;
+  net({ type: 'action', action: { type: 'undo' } });
+  selectedUnit = null; selectedBallista = null; hand = null;
+  reachable.clear(); capturable.clear(); fireTargets.clear();
+  closeUnitMenu(); setHandUI();
+};
+
+$('btnEndGame').onclick = () => {
+  if (confirm('Завершить игру для всех и вернуться в лобби?')) net({ type: 'endGame' });
+};
+
 function setHandUI() {
-  document.querySelectorAll('.buy').forEach((b) => b.classList.toggle('active', hand && hand.kind === b.dataset.buy));
+  document.querySelectorAll('.buy[data-buy]').forEach((b) => b.classList.toggle('active', hand && hand.kind === b.dataset.buy));
+  $('btnUnit').classList.toggle('active', hand && isUnitKind(hand.kind));
   const el = $('hand');
   if (hand) {
-    const names = { peasant: 'крестьянина', farm: 'ферму', tower: 'башню', strongTower: 'сильную башню' };
+    const names = {
+      peasant: 'крестьянина', spearman: 'копейщика', baron: 'барона', knight: 'рыцаря',
+      horseman: 'всадника', farm: 'ферму', tower: 'башню', strongTower: 'сильную башню', ballista: 'баллисту',
+    };
     el.textContent = `Поставьте ${names[hand.kind]} — кликните по клетке (повторно — отмена)`;
     el.classList.remove('hidden');
   } else { el.classList.add('hidden'); }
@@ -691,12 +1010,21 @@ function renderPanel() {
   }
 
   const canAct = isMyTurn() && !!pd;
-  document.querySelectorAll('.buy').forEach((b) => {
-    const costs = { peasant: 10, farm: 12 + 2 * ((provMembers.get(pd ? k(pd.capital.q, pd.capital.r) : '') || []).filter((m) => m.building === 'farm').length), tower: 15, strongTower: 35 };
+  const farmCount = (provMembers.get(pd ? k(pd.capital.q, pd.capital.r) : '') || []).filter((m) => m.building === 'farm').length;
+  const costs = { farm: 12 + 2 * farmCount, tower: 15, strongTower: 35, ballista: 80 };
+  document.querySelectorAll('.buy[data-buy]').forEach((b) => {
     b.disabled = !canAct || (pd && pd.money < costs[b.dataset.buy]);
   });
+  $('btnUnit').disabled = !canAct || (pd && pd.money < 10); // cheapest unit is 10
+  if (!canAct) closeUnitMenu();
+
+  $('btnUndo').disabled = !(isMyTurn() && state.canUndo);
   $('btnEnd').disabled = !isMyTurn();
   $('btnEnd').classList.toggle('ready', isMyTurn());
+
+  // host-only "end game" button
+  const isHost = YOU === 0;
+  $('btnEndGame').classList.toggle('hidden', !(isHost && state.status === 'playing'));
 }
 
 let toastTimer = null;

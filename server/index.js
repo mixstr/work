@@ -50,22 +50,15 @@ function requirePage(req, res, next) {
 
 app.get('/', requirePage, (_req, res) => res.sendFile(path.join(PUBLIC, 'index.html')));
 app.get('/app.js', requirePage, (_req, res) => res.sendFile(path.join(PUBLIC, 'app.js')));
-
-// anything else -> login
 app.use((_req, res) => res.redirect('/login'));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
-// authenticate the websocket upgrade via the session cookie
 server.on('upgrade', (req, socket, head) => {
   const cookies = parseCookies(req.headers.cookie);
   const username = verifySession(cookies[COOKIE_NAME]);
-  if (!username) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-    socket.destroy();
-    return;
-  }
+  if (!username) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
   wss.handleUpgrade(req, socket, head, (ws) => {
     ws.username = username;
     wss.emit('connection', ws, req);
@@ -77,11 +70,14 @@ server.on('upgrade', (req, socket, head) => {
 // ---------------------------------------------------------------------------
 
 const PLAYER_COLORS = [
-  '#e6473a', '#3a78e6', '#3ab54a', '#e6b73a', '#9b3ae6', '#3ae6d2',
+  '#e6473a', '#3a78e6', '#3ab54a', '#e6b73a',
+  '#9b3ae6', '#3ae6d2', '#e6803a', '#e63a9b',
 ];
+const MAX_SEATS = 8;
+const ALLOWED_TURN_TIMERS = [0, 30, 45, 60];
 
-const rooms = new Map();        // roomId -> room
-const userRoom = new Map();     // username -> roomId (active membership)
+const rooms = new Map();
+const userRoom = new Map();
 
 function makeRoomId() {
   let id;
@@ -89,17 +85,23 @@ function makeRoomId() {
   return id;
 }
 function getRoom(id) { return rooms.get(id); }
+function clamp(v, lo, hi) { return Math.min(Math.max(v | 0, lo), hi); }
 
 function createRoom(opts) {
   const id = makeRoomId();
   const room = {
     id,
-    seats: [], // {username, name, color, index, ws}
+    seats: [],
     game: null,
+    turnTimerHandle: null,
+    turnKey: null,
+    turnDeadline: null,
     opts: {
       width: clamp(opts.width || 14, 6, 24),
       height: clamp(opts.height || 11, 6, 20),
-      maxPlayers: clamp(opts.maxPlayers || 4, 2, 6),
+      maxPlayers: clamp(opts.maxPlayers || 4, 2, MAX_SEATS),
+      trees: opts.trees !== false,
+      turnTimer: ALLOWED_TURN_TIMERS.includes(opts.turnTimer | 0) ? (opts.turnTimer | 0) : 0,
     },
     createdAt: Date.now(),
   };
@@ -107,9 +109,7 @@ function createRoom(opts) {
   return room;
 }
 
-function clamp(v, lo, hi) { return Math.min(Math.max(v | 0, lo), hi); }
 function seatByUser(room, username) { return room.seats.find((s) => s.username === username) || null; }
-
 function send(ws, msg) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); }
 
 function lobbyPayload(room, seat) {
@@ -134,18 +134,46 @@ function broadcastLobby(room) {
 function broadcastState(room) {
   if (!room.game) return;
   const snapshot = room.game.serialize();
-  for (const s of room.seats) send(s.ws, { type: 'state', you: s.index, game: snapshot });
+  for (const s of room.seats) {
+    send(s.ws, { type: 'state', you: s.index, game: snapshot, turnDeadline: room.turnDeadline });
+  }
 }
 
-// Remove a user from a not-yet-started room (leaving the lobby).
+// ---- turn timer ----------------------------------------------------------
+function clearTurnTimer(room) {
+  if (room.turnTimerHandle) { clearTimeout(room.turnTimerHandle); room.turnTimerHandle = null; }
+  room.turnKey = null;
+  room.turnDeadline = null;
+}
+
+function armTurnTimer(room) {
+  if (!room.game || room.game.status !== 'playing' || !room.opts.turnTimer) {
+    if (room.turnTimerHandle) { clearTimeout(room.turnTimerHandle); room.turnTimerHandle = null; }
+    room.turnDeadline = null;
+    return;
+  }
+  const key = `${room.game.current}:${room.game.turnCount}`;
+  if (key === room.turnKey && room.turnTimerHandle) return; // same turn, keep running
+  if (room.turnTimerHandle) clearTimeout(room.turnTimerHandle);
+  room.turnKey = key;
+  room.turnDeadline = Date.now() + room.opts.turnTimer * 1000;
+  room.turnTimerHandle = setTimeout(() => {
+    if (!room.game || room.game.status !== 'playing') return;
+    if (`${room.game.current}:${room.game.turnCount}` !== key) return;
+    room.game.applyAction(room.game.current, { type: 'endTurn' });
+    if (room.game.status === 'finished') { for (const s of room.seats) userRoom.delete(s.username); }
+    armTurnTimer(room);
+    broadcastState(room);
+  }, room.opts.turnTimer * 1000);
+}
+
 function leaveLobby(username) {
   const rid = userRoom.get(username);
   if (!rid) return;
   const room = getRoom(rid);
-  if (!room || room.game) return; // never auto-leave an in-progress game
+  if (!room || room.game) return;
   room.seats = room.seats.filter((s) => s.username !== username);
   userRoom.delete(username);
-  // reindex + recolor remaining seats
   room.seats.forEach((s, i) => { s.index = i; s.color = PLAYER_COLORS[i]; });
   if (room.seats.length === 0) rooms.delete(room.id);
   else broadcastLobby(room);
@@ -159,16 +187,14 @@ wss.on('connection', (ws) => {
   ws.roomId = null;
   send(ws, { type: 'me', username: ws.username });
 
-  // auto-resume: if the user is already a seat somewhere, reattach
   const rid = userRoom.get(ws.username);
   if (rid) {
     const room = getRoom(rid);
     const seat = room && seatByUser(room, ws.username);
     if (room && seat) {
-      seat.ws = ws;
-      ws.roomId = room.id;
+      seat.ws = ws; ws.roomId = room.id;
       send(ws, lobbyPayload(room, seat));
-      if (room.game) send(ws, { type: 'state', you: seat.index, game: room.game.serialize() });
+      if (room.game) send(ws, { type: 'state', you: seat.index, game: room.game.serialize(), turnDeadline: room.turnDeadline });
       broadcastLobby(room);
     } else {
       userRoom.delete(ws.username);
@@ -189,10 +215,7 @@ wss.on('connection', (ws) => {
     const room = ws.roomId ? getRoom(ws.roomId) : null;
     if (!room) return;
     const seat = seatByUser(room, ws.username);
-    if (seat && seat.ws === ws) {
-      seat.ws = null;
-      broadcastLobby(room);
-    }
+    if (seat && seat.ws === ws) { seat.ws = null; broadcastLobby(room); }
   });
 });
 
@@ -201,15 +224,15 @@ function handleMessage(ws, msg) {
     case 'create': return onCreate(ws, msg);
     case 'join': return onJoin(ws, msg);
     case 'config': return onConfig(ws, msg);
-    case 'start': return onStart(ws, msg);
+    case 'start': return onStart(ws);
     case 'leave': return onLeave(ws);
+    case 'endGame': return onEndGame(ws);
     case 'action': return onAction(ws, msg);
     default: return;
   }
 }
 
 function onCreate(ws, msg) {
-  // if already inside a running game, resume instead of creating a new one
   const existing = userRoom.get(ws.username);
   if (existing && getRoom(existing) && getRoom(existing).game) {
     const room = getRoom(existing);
@@ -221,12 +244,11 @@ function onCreate(ws, msg) {
   }
   leaveLobby(ws.username);
 
-  const room = createRoom({ width: msg.width, height: msg.height, maxPlayers: msg.maxPlayers });
-  const seat = {
-    username: ws.username,
-    name: (msg.name || ws.username).slice(0, 16),
-    color: PLAYER_COLORS[0], index: 0, ws,
-  };
+  const room = createRoom({
+    width: msg.width, height: msg.height, maxPlayers: msg.maxPlayers,
+    trees: msg.trees, turnTimer: msg.turnTimer,
+  });
+  const seat = { username: ws.username, name: (msg.name || ws.username).slice(0, 16), color: PLAYER_COLORS[0], index: 0, ws };
   room.seats.push(seat);
   userRoom.set(ws.username, room.id);
   ws.roomId = room.id;
@@ -238,7 +260,6 @@ function onJoin(ws, msg) {
   const room = getRoom((msg.roomId || '').toUpperCase());
   if (!room) return send(ws, { type: 'error', message: 'Комната не найдена' });
 
-  // already a member -> reattach (covers reconnect into running game)
   let seat = seatByUser(room, ws.username);
   if (seat) {
     if (msg.name) seat.name = msg.name.slice(0, 16);
@@ -251,17 +272,11 @@ function onJoin(ws, msg) {
   }
 
   if (room.game) return send(ws, { type: 'error', message: 'Игра уже началась' });
-  if (room.seats.length >= room.opts.maxPlayers) {
-    return send(ws, { type: 'error', message: 'Комната заполнена' });
-  }
-  leaveLobby(ws.username); // leave any previous lobby
+  if (room.seats.length >= room.opts.maxPlayers) return send(ws, { type: 'error', message: 'Комната заполнена' });
+  leaveLobby(ws.username);
 
   const index = room.seats.length;
-  seat = {
-    username: ws.username,
-    name: (msg.name || ws.username).slice(0, 16),
-    color: PLAYER_COLORS[index], index, ws,
-  };
+  seat = { username: ws.username, name: (msg.name || ws.username).slice(0, 16), color: PLAYER_COLORS[index], index, ws };
   room.seats.push(seat);
   userRoom.set(ws.username, room.id);
   ws.roomId = room.id;
@@ -273,12 +288,12 @@ function onConfig(ws, msg) {
   const room = ws.roomId ? getRoom(ws.roomId) : null;
   if (!room || room.game) return;
   const seat = seatByUser(room, ws.username);
-  if (!seat || seat.index !== 0) return; // host only
+  if (!seat || seat.index !== 0) return;
   if (msg.width != null) room.opts.width = clamp(msg.width, 6, 24);
   if (msg.height != null) room.opts.height = clamp(msg.height, 6, 20);
-  if (msg.maxPlayers != null) {
-    room.opts.maxPlayers = clamp(Math.max(msg.maxPlayers, room.seats.length), 2, 6);
-  }
+  if (msg.maxPlayers != null) room.opts.maxPlayers = clamp(Math.max(msg.maxPlayers, room.seats.length), 2, MAX_SEATS);
+  if (msg.trees != null) room.opts.trees = !!msg.trees;
+  if (msg.turnTimer != null && ALLOWED_TURN_TIMERS.includes(msg.turnTimer | 0)) room.opts.turnTimer = msg.turnTimer | 0;
   broadcastLobby(room);
 }
 
@@ -286,26 +301,32 @@ function onStart(ws) {
   const room = ws.roomId ? getRoom(ws.roomId) : null;
   if (!room) return;
   const seat = seatByUser(room, ws.username);
-  if (!seat || seat.index !== 0) {
-    return send(ws, { type: 'error', message: 'Запустить игру может только хост' });
-  }
+  if (!seat || seat.index !== 0) return send(ws, { type: 'error', message: 'Запустить игру может только хост' });
   if (room.game) return;
-  if (room.seats.length < 2) {
-    return send(ws, { type: 'error', message: 'Нужно минимум 2 игрока' });
-  }
+  if (room.seats.length < 2) return send(ws, { type: 'error', message: 'Нужно минимум 2 игрока' });
   const players = room.seats.map((s) => ({ name: s.name, color: s.color }));
-  room.game = new Game(players, { width: room.opts.width, height: room.opts.height });
+  room.game = new Game(players, { width: room.opts.width, height: room.opts.height, trees: room.opts.trees });
   broadcastLobby(room);
+  armTurnTimer(room);
   broadcastState(room);
 }
 
 function onLeave(ws) {
-  // explicit "back to menu" from a lobby (not allowed mid-game)
   const room = ws.roomId ? getRoom(ws.roomId) : null;
-  if (!room) return;
-  if (room.game) return; // can't abandon a running game seat
+  if (!room || room.game) return; // can't abandon a running game seat
   leaveLobby(ws.username);
   ws.roomId = null;
+}
+
+function onEndGame(ws) {
+  const room = ws.roomId ? getRoom(ws.roomId) : null;
+  if (!room || !room.game) return;
+  const seat = seatByUser(room, ws.username);
+  if (!seat || seat.index !== 0) return send(ws, { type: 'error', message: 'Завершить игру может только хост' });
+  room.game = null;
+  clearTurnTimer(room);
+  for (const s of room.seats) send(s.ws, { type: 'gameEnded' });
+  broadcastLobby(room);
 }
 
 function onAction(ws, msg) {
@@ -315,10 +336,11 @@ function onAction(ws, msg) {
   if (!seat) return;
   const ok = room.game.applyAction(seat.index, msg.action);
   if (!ok && room.game.lastError) send(ws, { type: 'error', message: room.game.lastError });
-
   if (room.game.status === 'finished') {
-    // free up players so they can start a new game afterwards
+    clearTurnTimer(room);
     for (const s of room.seats) userRoom.delete(s.username);
+  } else {
+    armTurnTimer(room);
   }
   broadcastState(room);
 }
