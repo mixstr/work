@@ -7,11 +7,7 @@ const $ = (id) => document.getElementById(id);
 const SQRT3 = Math.sqrt(3);
 const SIZE = 34; // base hex radius in world units
 
-function token() {
-  let t = localStorage.getItem('antiyoy_token');
-  if (!t) { t = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('antiyoy_token', t); }
-  return t;
-}
+let MY_USERNAME = '';
 
 // ===========================================================================
 // Networking
@@ -26,9 +22,7 @@ function connect() {
   ws.onopen = () => {
     wsReady = true;
     while (outbox.length) ws.send(JSON.stringify(outbox.shift()));
-    // auto-rejoin if we were in a room
-    const rid = sessionStorage.getItem('antiyoy_room');
-    if (rid) net({ type: 'join', roomId: rid, token: token(), name: nameInput() });
+    // server auto-resumes us into any room/game we belong to (keyed by account)
   };
   ws.onmessage = (e) => { try { onServer(JSON.parse(e.data)); } catch (err) { console.error(err); } };
   ws.onclose = () => { wsReady = false; setTimeout(connect, 1500); };
@@ -41,7 +35,7 @@ function net(msg) {
 }
 
 function nameInput() {
-  return ($('name').value || localStorage.getItem('antiyoy_name') || 'Игрок').slice(0, 16);
+  return ($('name').value || localStorage.getItem('antiyoy_name') || MY_USERNAME || 'Игрок').slice(0, 16);
 }
 
 // ===========================================================================
@@ -72,10 +66,15 @@ const k = (q, r) => q + ',' + r;
 
 function onServer(msg) {
   switch (msg.type) {
+    case 'me':
+      MY_USERNAME = msg.username || '';
+      $('meName').textContent = MY_USERNAME;
+      if (!$('name').value) $('name').value = localStorage.getItem('antiyoy_name') || MY_USERNAME;
+      break;
     case 'created':
-      roomId = msg.roomId; sessionStorage.setItem('antiyoy_room', roomId); break;
+      roomId = msg.roomId; break;
     case 'joined':
-      roomId = msg.roomId; YOU = msg.you; sessionStorage.setItem('antiyoy_room', roomId); break;
+      roomId = msg.roomId; YOU = msg.you; break;
     case 'lobby':
       roomId = msg.roomId; YOU = msg.you; renderLobby(msg);
       if (!msg.started) show('lobby');
@@ -98,7 +97,7 @@ function showError(text) {
 $('btnCreate').onclick = () => {
   localStorage.setItem('antiyoy_name', nameInput());
   net({
-    type: 'create', token: token(), name: nameInput(),
+    type: 'create', name: nameInput(),
     width: +$('optW').value, height: +$('optH').value, maxPlayers: +$('optMax').value,
   });
 };
@@ -106,13 +105,19 @@ $('btnJoin').onclick = () => {
   const code = $('joinCode').value.trim().toUpperCase();
   if (code.length < 3) return showError('Введите код комнаты');
   localStorage.setItem('antiyoy_name', nameInput());
-  net({ type: 'join', roomId: code, token: token(), name: nameInput() });
+  net({ type: 'join', roomId: code, name: nameInput() });
 };
 $('name').value = localStorage.getItem('antiyoy_name') || '';
+
+$('btnLogout').onclick = async () => {
+  try { await fetch('/api/logout', { method: 'POST' }); } catch {}
+  location.href = '/login';
+};
 
 // ===========================================================================
 // Lobby
 // ===========================================================================
+let configEcho = false; // guard so server echoes don't fight user typing
 function renderLobby(msg) {
   $('lobbyCode').textContent = msg.roomId;
   const list = $('playerList');
@@ -129,8 +134,31 @@ function renderLobby(msg) {
   $('lobbyHint').textContent = msg.host
     ? (msg.players.length < 2 ? 'Ждём ещё игроков…' : 'Можно начинать!')
     : 'Ждём, пока хост начнёт игру…';
+
+  // settings: editable by host, read-only for everyone else
+  if (msg.opts) {
+    configEcho = true;
+    $('lobW').value = msg.opts.width;
+    $('lobH').value = msg.opts.height;
+    $('lobMax').value = msg.opts.maxPlayers;
+    configEcho = false;
+  }
+  for (const id of ['lobW', 'lobH', 'lobMax']) $(id).disabled = !msg.host;
+  $('settingsHint').textContent = msg.host
+    ? 'Можно менять до старта.'
+    : 'Настройки задаёт хост.';
 }
-$('btnStart').onclick = () => net({ type: 'start', token: token() });
+$('btnStart').onclick = () => net({ type: 'start' });
+$('btnLeave').onclick = () => { net({ type: 'leave' }); show('menu'); };
+
+function sendConfig() {
+  if (configEcho) return;
+  net({
+    type: 'config',
+    width: +$('lobW').value, height: +$('lobH').value, maxPlayers: +$('lobMax').value,
+  });
+}
+for (const id of ['lobW', 'lobH', 'lobMax']) $(id).addEventListener('change', sendConfig);
 
 function escapeHtml(s) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 

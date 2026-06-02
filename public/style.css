@@ -76,6 +76,25 @@ button.primary { background: var(--accent); width: 100%; }
 button.primary:hover { background: #4c87f0; }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 
+.userbar {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px; font-size: 13px; color: var(--muted);
+}
+.userbar b { color: var(--text); }
+button.ghost {
+  background: transparent; border: 1px solid #36496b; color: var(--muted);
+  padding: 6px 12px; font-size: 13px;
+}
+button.ghost:hover { background: #1f2c44; }
+
+.settings-box {
+  border: 1px solid #2c3d5c; border-radius: 10px; padding: 10px 14px; margin: 14px 0;
+}
+.settings-box legend { color: var(--muted); font-size: 13px; padding: 0 6px; }
+.settings-box label { display: flex; justify-content: space-between; align-items: center; }
+.settings-box input { width: 90px; margin: 0; }
+.settings-box input:disabled { opacity: 0.5; }
+
 .divider { text-align: center; color: var(--muted); margin: 18px 0 4px; }
 .settings { margin-top: 18px; color: var(--muted); }
 .settings summary { cursor: pointer; }

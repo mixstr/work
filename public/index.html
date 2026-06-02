@@ -10,8 +10,12 @@
   <!-- Lobby / menu -->
   <div id="menu" class="screen">
     <div class="card">
+      <div class="userbar">
+        <span>Вы вошли как <b id="meName">…</b></span>
+        <button id="btnLogout" class="ghost">Выйти</button>
+      </div>
       <h1>Antiyoy <span>Online</span></h1>
-      <label>Ваше имя
+      <label>Имя в игре (никнейм)
         <input id="name" maxlength="16" placeholder="Игрок" />
       </label>
 
@@ -43,7 +47,19 @@
       <h2>Комната <span id="lobbyCode" class="code"></span></h2>
       <p class="hint">Поделитесь кодом с друзьями, чтобы они вошли.</p>
       <ul id="playerList"></ul>
-      <button id="btnStart" class="primary hidden">Начать игру</button>
+
+      <fieldset id="lobbySettings" class="settings-box">
+        <legend>Настройки игры</legend>
+        <label>Ширина карты <input id="lobW" type="number" min="6" max="24" /></label>
+        <label>Высота карты <input id="lobH" type="number" min="6" max="20" /></label>
+        <label>Макс. игроков <input id="lobMax" type="number" min="2" max="6" /></label>
+        <p id="settingsHint" class="hint"></p>
+      </fieldset>
+
+      <div class="row">
+        <button id="btnStart" class="primary hidden">Начать игру</button>
+        <button id="btnLeave" class="ghost">Выйти</button>
+      </div>
       <p id="lobbyHint" class="hint"></p>
     </div>
   </div>

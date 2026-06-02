@@ -5,51 +5,101 @@ const path = require('path');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const { Game } = require('./game');
+const { authenticate } = require('./db');
+const {
+  setSessionCookie, clearSessionCookie, userFromRequest, parseCookies, verifySession, COOKIE_NAME,
+} = require('./auth');
 
 const PORT = process.env.PORT || 3000;
+const PUBLIC = path.join(__dirname, '..', 'public');
 
 const app = express();
-app.use(express.static(path.join(__dirname, '..', 'public')));
+app.use(express.json());
+
+// ---- public assets (login page) ------------------------------------------
+app.get('/login', (_req, res) => res.sendFile(path.join(PUBLIC, 'login.html')));
+app.get('/login.js', (_req, res) => res.sendFile(path.join(PUBLIC, 'login.js')));
+app.get('/style.css', (_req, res) => res.sendFile(path.join(PUBLIC, 'style.css')));
 app.get('/healthz', (_req, res) => res.send('ok'));
 
+// ---- auth API ------------------------------------------------------------
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body || {};
+  const user = authenticate(username, password);
+  if (!user) return res.status(401).json({ error: 'Неверный логин или пароль' });
+  setSessionCookie(res, user.username);
+  res.json({ ok: true, username: user.username });
+});
+
+app.post('/api/logout', (req, res) => {
+  clearSessionCookie(res);
+  res.json({ ok: true });
+});
+
+app.get('/api/me', (req, res) => {
+  const username = userFromRequest(req);
+  if (!username) return res.status(401).json({ error: 'unauthorized' });
+  res.json({ username });
+});
+
+// ---- gated app -----------------------------------------------------------
+function requirePage(req, res, next) {
+  if (userFromRequest(req)) return next();
+  return res.redirect('/login');
+}
+
+app.get('/', requirePage, (_req, res) => res.sendFile(path.join(PUBLIC, 'index.html')));
+app.get('/app.js', requirePage, (_req, res) => res.sendFile(path.join(PUBLIC, 'app.js')));
+
+// anything else -> login
+app.use((_req, res) => res.redirect('/login'));
+
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ noServer: true });
+
+// authenticate the websocket upgrade via the session cookie
+server.on('upgrade', (req, socket, head) => {
+  const cookies = parseCookies(req.headers.cookie);
+  const username = verifySession(cookies[COOKIE_NAME]);
+  if (!username) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    ws.username = username;
+    wss.emit('connection', ws, req);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Rooms
 // ---------------------------------------------------------------------------
 
 const PLAYER_COLORS = [
-  '#e6473a', // red
-  '#3a78e6', // blue
-  '#3ab54a', // green
-  '#e6b73a', // yellow
-  '#9b3ae6', // purple
-  '#3ae6d2', // cyan
+  '#e6473a', '#3a78e6', '#3ab54a', '#e6b73a', '#9b3ae6', '#3ae6d2',
 ];
 
-const rooms = new Map(); // roomId -> room
+const rooms = new Map();        // roomId -> room
+const userRoom = new Map();     // username -> roomId (active membership)
 
 function makeRoomId() {
   let id;
-  do {
-    id = Math.random().toString(36).slice(2, 6).toUpperCase();
-  } while (rooms.has(id));
+  do { id = Math.random().toString(36).slice(2, 6).toUpperCase(); } while (rooms.has(id));
   return id;
 }
-
 function getRoom(id) { return rooms.get(id); }
 
 function createRoom(opts) {
   const id = makeRoomId();
   const room = {
     id,
-    seats: [], // {token, name, color, index, ws}
+    seats: [], // {username, name, color, index, ws}
     game: null,
     opts: {
-      width: opts.width,
-      height: opts.height,
-      maxPlayers: Math.min(Math.max(opts.maxPlayers || 4, 2), 6),
+      width: clamp(opts.width || 14, 6, 24),
+      height: clamp(opts.height || 11, 6, 20),
+      maxPlayers: clamp(opts.maxPlayers || 4, 2, 6),
     },
     createdAt: Date.now(),
   };
@@ -57,37 +107,48 @@ function createRoom(opts) {
   return room;
 }
 
-function seatByToken(room, token) {
-  return room.seats.find((s) => s.token === token) || null;
-}
+function clamp(v, lo, hi) { return Math.min(Math.max(v | 0, lo), hi); }
+function seatByUser(room, username) { return room.seats.find((s) => s.username === username) || null; }
 
-function send(ws, msg) {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg));
+function send(ws, msg) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); }
+
+function lobbyPayload(room, seat) {
+  return {
+    type: 'lobby',
+    roomId: room.id,
+    players: room.seats.map((s) => ({
+      name: s.name, color: s.color, index: s.index,
+      connected: !!(s.ws && s.ws.readyState === 1),
+    })),
+    you: seat.index,
+    host: seat.index === 0,
+    started: !!room.game,
+    opts: room.opts,
+  };
 }
 
 function broadcastLobby(room) {
-  const players = room.seats.map((s) => ({
-    name: s.name, color: s.color, index: s.index, connected: !!(s.ws && s.ws.readyState === 1),
-  }));
-  for (const s of room.seats) {
-    send(s.ws, {
-      type: 'lobby',
-      roomId: room.id,
-      players,
-      you: s.index,
-      host: s.index === 0,
-      started: !!room.game,
-      maxPlayers: room.opts.maxPlayers,
-    });
-  }
+  for (const s of room.seats) send(s.ws, lobbyPayload(room, s));
 }
 
 function broadcastState(room) {
   if (!room.game) return;
   const snapshot = room.game.serialize();
-  for (const s of room.seats) {
-    send(s.ws, { type: 'state', you: s.index, game: snapshot });
-  }
+  for (const s of room.seats) send(s.ws, { type: 'state', you: s.index, game: snapshot });
+}
+
+// Remove a user from a not-yet-started room (leaving the lobby).
+function leaveLobby(username) {
+  const rid = userRoom.get(username);
+  if (!rid) return;
+  const room = getRoom(rid);
+  if (!room || room.game) return; // never auto-leave an in-progress game
+  room.seats = room.seats.filter((s) => s.username !== username);
+  userRoom.delete(username);
+  // reindex + recolor remaining seats
+  room.seats.forEach((s, i) => { s.index = i; s.color = PLAYER_COLORS[i]; });
+  if (room.seats.length === 0) rooms.delete(room.id);
+  else broadcastLobby(room);
 }
 
 // ---------------------------------------------------------------------------
@@ -96,15 +157,29 @@ function broadcastState(room) {
 
 wss.on('connection', (ws) => {
   ws.roomId = null;
-  ws.token = null;
+  send(ws, { type: 'me', username: ws.username });
+
+  // auto-resume: if the user is already a seat somewhere, reattach
+  const rid = userRoom.get(ws.username);
+  if (rid) {
+    const room = getRoom(rid);
+    const seat = room && seatByUser(room, ws.username);
+    if (room && seat) {
+      seat.ws = ws;
+      ws.roomId = room.id;
+      send(ws, lobbyPayload(room, seat));
+      if (room.game) send(ws, { type: 'state', you: seat.index, game: room.game.serialize() });
+      broadcastLobby(room);
+    } else {
+      userRoom.delete(ws.username);
+    }
+  }
 
   ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (!msg || typeof msg.type !== 'string') return;
-    try {
-      handleMessage(ws, msg);
-    } catch (err) {
+    try { handleMessage(ws, msg); } catch (err) {
       console.error('handler error', err);
       send(ws, { type: 'error', message: 'Внутренняя ошибка сервера' });
     }
@@ -113,61 +188,48 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     const room = ws.roomId ? getRoom(ws.roomId) : null;
     if (!room) return;
-    const seat = seatByToken(room, ws.token);
+    const seat = seatByUser(room, ws.username);
     if (seat && seat.ws === ws) {
       seat.ws = null;
-      // if lobby not started and host leaves, just keep seat; cleanup empty rooms
       broadcastLobby(room);
-      maybeCleanupRoom(room);
     }
   });
 });
-
-function maybeCleanupRoom(room) {
-  const anyConnected = room.seats.some((s) => s.ws && s.ws.readyState === 1);
-  if (!anyConnected) {
-    // give a grace period then delete if still empty
-    setTimeout(() => {
-      const r = getRoom(room.id);
-      if (r && !r.seats.some((s) => s.ws && s.ws.readyState === 1)) {
-        rooms.delete(room.id);
-      }
-    }, 5 * 60 * 1000);
-  }
-}
 
 function handleMessage(ws, msg) {
   switch (msg.type) {
     case 'create': return onCreate(ws, msg);
     case 'join': return onJoin(ws, msg);
+    case 'config': return onConfig(ws, msg);
     case 'start': return onStart(ws, msg);
+    case 'leave': return onLeave(ws);
     case 'action': return onAction(ws, msg);
     default: return;
   }
 }
 
-function attachSeat(ws, room, seat) {
-  // detach token from previous connection if any
-  ws.roomId = room.id;
-  ws.token = seat.token;
-  seat.ws = ws;
-}
-
 function onCreate(ws, msg) {
-  const room = createRoom({
-    width: msg.width,
-    height: msg.height,
-    maxPlayers: msg.maxPlayers,
-  });
+  // if already inside a running game, resume instead of creating a new one
+  const existing = userRoom.get(ws.username);
+  if (existing && getRoom(existing) && getRoom(existing).game) {
+    const room = getRoom(existing);
+    const seat = seatByUser(room, ws.username);
+    seat.ws = ws; ws.roomId = room.id;
+    send(ws, lobbyPayload(room, seat));
+    broadcastState(room);
+    return send(ws, { type: 'error', message: 'Вы уже в активной игре — возвращаю вас в неё' });
+  }
+  leaveLobby(ws.username);
+
+  const room = createRoom({ width: msg.width, height: msg.height, maxPlayers: msg.maxPlayers });
   const seat = {
-    token: msg.token,
-    name: (msg.name || 'Игрок').slice(0, 16),
-    color: PLAYER_COLORS[0],
-    index: 0,
-    ws,
+    username: ws.username,
+    name: (msg.name || ws.username).slice(0, 16),
+    color: PLAYER_COLORS[0], index: 0, ws,
   };
   room.seats.push(seat);
-  attachSeat(ws, room, seat);
+  userRoom.set(ws.username, room.id);
+  ws.roomId = room.id;
   send(ws, { type: 'created', roomId: room.id });
   broadcastLobby(room);
 }
@@ -176,11 +238,12 @@ function onJoin(ws, msg) {
   const room = getRoom((msg.roomId || '').toUpperCase());
   if (!room) return send(ws, { type: 'error', message: 'Комната не найдена' });
 
-  // reconnect path: seat with same token already exists
-  let seat = seatByToken(room, msg.token);
+  // already a member -> reattach (covers reconnect into running game)
+  let seat = seatByUser(room, ws.username);
   if (seat) {
     if (msg.name) seat.name = msg.name.slice(0, 16);
-    attachSeat(ws, room, seat);
+    seat.ws = ws; ws.roomId = room.id;
+    userRoom.set(ws.username, room.id);
     send(ws, { type: 'joined', roomId: room.id, you: seat.index });
     broadcastLobby(room);
     if (room.game) broadcastState(room);
@@ -191,25 +254,38 @@ function onJoin(ws, msg) {
   if (room.seats.length >= room.opts.maxPlayers) {
     return send(ws, { type: 'error', message: 'Комната заполнена' });
   }
+  leaveLobby(ws.username); // leave any previous lobby
 
   const index = room.seats.length;
   seat = {
-    token: msg.token,
-    name: (msg.name || 'Игрок').slice(0, 16),
-    color: PLAYER_COLORS[index],
-    index,
-    ws,
+    username: ws.username,
+    name: (msg.name || ws.username).slice(0, 16),
+    color: PLAYER_COLORS[index], index, ws,
   };
   room.seats.push(seat);
-  attachSeat(ws, room, seat);
+  userRoom.set(ws.username, room.id);
+  ws.roomId = room.id;
   send(ws, { type: 'joined', roomId: room.id, you: seat.index });
   broadcastLobby(room);
 }
 
-function onStart(ws, msg) {
+function onConfig(ws, msg) {
+  const room = ws.roomId ? getRoom(ws.roomId) : null;
+  if (!room || room.game) return;
+  const seat = seatByUser(room, ws.username);
+  if (!seat || seat.index !== 0) return; // host only
+  if (msg.width != null) room.opts.width = clamp(msg.width, 6, 24);
+  if (msg.height != null) room.opts.height = clamp(msg.height, 6, 20);
+  if (msg.maxPlayers != null) {
+    room.opts.maxPlayers = clamp(Math.max(msg.maxPlayers, room.seats.length), 2, 6);
+  }
+  broadcastLobby(room);
+}
+
+function onStart(ws) {
   const room = ws.roomId ? getRoom(ws.roomId) : null;
   if (!room) return;
-  const seat = seatByToken(room, ws.token);
+  const seat = seatByUser(room, ws.username);
   if (!seat || seat.index !== 0) {
     return send(ws, { type: 'error', message: 'Запустить игру может только хост' });
   }
@@ -223,14 +299,26 @@ function onStart(ws, msg) {
   broadcastState(room);
 }
 
+function onLeave(ws) {
+  // explicit "back to menu" from a lobby (not allowed mid-game)
+  const room = ws.roomId ? getRoom(ws.roomId) : null;
+  if (!room) return;
+  if (room.game) return; // can't abandon a running game seat
+  leaveLobby(ws.username);
+  ws.roomId = null;
+}
+
 function onAction(ws, msg) {
   const room = ws.roomId ? getRoom(ws.roomId) : null;
   if (!room || !room.game) return;
-  const seat = seatByToken(room, ws.token);
+  const seat = seatByUser(room, ws.username);
   if (!seat) return;
   const ok = room.game.applyAction(seat.index, msg.action);
-  if (!ok && room.game.lastError) {
-    send(ws, { type: 'error', message: room.game.lastError });
+  if (!ok && room.game.lastError) send(ws, { type: 'error', message: room.game.lastError });
+
+  if (room.game.status === 'finished') {
+    // free up players so they can start a new game afterwards
+    for (const s of room.seats) userRoom.delete(s.username);
   }
   broadcastState(room);
 }
