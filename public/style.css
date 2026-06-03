@@ -155,6 +155,23 @@ button.ghost:hover { background: #1f2c44; }
 .chatbtn:hover { background: rgba(70, 140, 105, 0.95); }
 .chatbtn.unread { background: #e6b73a; color: #1b2940; }
 
+/* ---- kill-feed (spell / landing announcements) ---- */
+.killfeed {
+  position: absolute; top: 54px; left: 50%; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  pointer-events: none; z-index: 18; width: max-content; max-width: 92vw;
+}
+.kf-line {
+  background: rgba(13, 20, 34, 0.92);
+  border: 1px solid #2c3d5c; border-radius: 18px;
+  padding: 7px 16px; font-size: 14px; font-weight: 600;
+  white-space: nowrap; backdrop-filter: blur(4px);
+  opacity: 0; transform: translateY(-8px) scale(0.96);
+  transition: opacity 0.3s, transform 0.3s;
+}
+.kf-line.show { opacity: 1; transform: translateY(0) scale(1); }
+.kf-arrow { color: #ff7b2a; margin: 0 4px; font-weight: 800; }
+
 /* ---- in-game chat ---- */
 .chat {
   position: absolute; left: 10px; bottom: 200px;

@@ -68,10 +68,10 @@ const UNIT_DEFS = [
   { kind: 'spearman', level: 2, cost: 20, name: 'Копейщик', sub: 'ур.2 · содерж. 6', desc: 'Бьёт защиту 1 уровня. Получается из двух крестьян.' },
   { kind: 'baron', level: 3, cost: 30, name: 'Барон', sub: 'ур.3 · содерж. 18', desc: 'Бьёт защиту 2 уровня. Дорогое содержание.' },
   { kind: 'knight', level: 4, cost: 40, name: 'Рыцарь', sub: 'ур.4 · содерж. 54', desc: 'Сильнейший. Пробивает любую защиту, неуязвим для баллисты и метеора.' },
-  { kind: 'horseman', level: 2, cost: 25, name: 'Всадник', sub: 'ур.2 · содерж. 10', desc: 'Сила копейщика, дальность ×1.5 (рейды на 2 гекса). Вне своей провинции живёт 3 хода.' },
-  { kind: 'scout', level: 1, cost: 15, name: 'Лазутчик', sub: 'ур.1 · содерж. 4', desc: 'Скрытность: невидим врагу, пока не подойдёт к его земле. Диверсант.' },
+  { kind: 'horseman', level: 2, cost: 25, name: 'Всадник', sub: 'ур.2 · содерж. 10', desc: 'Сила копейщика, дальность ×1.5 (рейды на 2 гекса). Захватывает только клетки, примыкающие к своей земле; иначе просто заходит и диверсирует. Вне своей территории живёт 3 хода.' },
+  { kind: 'scout', level: 1, cost: 15, name: 'Лазутчик', sub: 'ур.1 · содерж. 4', desc: 'Скрытность: невидим врагу, пока не подойдёт к его земле. НЕ захватывает территорию — ходит по чужой земле, ломает фермы, но не забирает цвет. Вне дома живёт 3 хода.' },
   { kind: 'summoner', level: 2, cost: 35, name: 'Призыватель', sub: 'ур.2 · содерж. 12', desc: 'Раз в ход бесплатно призывает волка на соседнюю свою клетку. Волк живёт 2 хода, сила 1, бесплатен.' },
-  { kind: 'eagle', level: 3, cost: 120, name: 'Барон на орле', sub: 'ур.3 · содерж. 18', desc: 'Рейдовый воин: высаживается в ЛЮБУЮ клетку карты (если пробивает защиту). Сила барона (ур.3). Вне своей территории живёт 3 хода.' },
+  { kind: 'griffon', level: 3, cost: 120, name: 'Грифон', sub: 'ур.3 · содерж. 18', desc: 'Рейдовый воин: при покупке высаживается в ЛЮБУЮ клетку (с анимацией). Захватывает её только если примыкает к своей земле, иначе диверсирует. Дальше ходит как барон. Вне своей территории живёт 3 хода.' },
   { kind: 'wolf', level: 1, cost: 0, name: 'Волк', sub: 'TTL 2 хода · бесплатно', desc: 'Призывается призывателем. Живёт 2 хода, сила уровня 1, не объединяется. Захватывает незащищённые клетки.', summonedOnly: true },
 ];
 // movement / combat attributes mirrored from the server catalog (for highlights)
@@ -84,7 +84,7 @@ const CAT = {
   scout: { level: 1, moveRange: 4, special: true, noCapture: true },
   summoner: { level: 2, moveRange: 4, captureReach: 1, special: true },
   wolf: { level: 1, moveRange: 4, captureReach: 1, special: true },
-  eagle: { level: 3, moveRange: 99, captureReach: 99, special: true, landAnywhere: true },
+  griffon: { level: 3, moveRange: 4, captureReach: 1, special: true, landAnywhere: true },
 };
 const UPGRADE_DEFS = [
   { kind: 'farmIncome', cost: 200, name: 'Аграрная реформа', sub: 'новые фермы ×2', desc: 'Покупается один раз за игру. Все фермы, построенные ПОСЛЕ покупки, дают удвоенный доход (+8 вместо +4). Старые фермы не меняются.' },
@@ -244,7 +244,7 @@ function ingestState(g) {
   // drop selections that no longer belong to us / are stale
   if (selectedUnit) {
     const h = hexMap.get(k(selectedUnit.q, selectedUnit.r));
-    if (!h || h.owner !== YOU || !h.unit) { selectedUnit = null; }
+    if (!h || !h.unit || h.unit.owner !== YOU) { selectedUnit = null; }
   }
   if (selectedBallista) {
     const h = hexMap.get(k(selectedBallista.q, selectedBallista.r));
@@ -519,17 +519,18 @@ function drawContent(h, cx, cy, R) {
     drawBallista(ctx, cx, cy, R, h.fired);
   }
 
-  // unit on top, with a team-colored base marker so ownership is always clear
+  // unit on top, with a team-colored base marker keyed to the UNIT's owner
+  // (so an enemy infiltrator/scout squatting on your tile shows their colour)
   if (h.unit) {
-    const own = color(h.owner);
+    const own = color(h.unit.owner);
     ctx.save();
     ctx.globalAlpha = h.unit.moved ? 0.45 : 0.9;
     ctx.fillStyle = own;
     ctx.beginPath(); ctx.ellipse(cx, cy + R * 0.5, R * 0.34, R * 0.13, 0, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = Math.max(1, R * 0.03); ctx.stroke();
     ctx.restore();
-    // enemy unit on/next to your land gets a warning ring (helps spot scouts)
-    if (h.owner !== YOU && h.owner !== null) {
+    // enemy unit gets a coloured warning ring (helps spot scouts/infiltrators)
+    if (h.unit.owner !== YOU) {
       ctx.strokeStyle = own; ctx.lineWidth = Math.max(1.5, R * 0.05);
       ctx.beginPath(); ctx.arc(cx, cy - R * 0.05, R * 0.46, 0, Math.PI * 2); ctx.stroke();
     }
@@ -587,7 +588,7 @@ function drawUnit(g, unit, cx, cy, R, ignoreMoved) {
   else if (kind === 'scout') drawScout(g, cx, cy, R);
   else if (kind === 'summoner') drawSummoner(g, cx, cy, R);
   else if (kind === 'wolf') drawWolf(g, cx, cy, R);
-  else if (kind === 'eagle') drawEagle(g, cx, cy, R);
+  else if (kind === 'griffon') drawGriffon(g, cx, cy, R);
   else drawPerson(g, cx, cy, R, kind);
   g.restore();
 
@@ -617,20 +618,37 @@ function drawUnit(g, unit, cx, cy, R, ignoreMoved) {
 }
 
 function drawScout(g, cx, cy, R) {
-  g.lineWidth = Math.max(1, R * 0.04); g.strokeStyle = '#0d1422';
-  // dark hooded cloak
-  g.fillStyle = '#3a4a5e';
+  g.lineWidth = Math.max(1, R * 0.04); g.strokeStyle = '#11161f'; g.lineJoin = 'round';
+  // flowing cloak (slightly asymmetric for a sneaky silhouette)
+  g.fillStyle = '#2f3c4f';
   g.beginPath();
-  g.moveTo(cx, cy - R * 0.5);
-  g.lineTo(cx + R * 0.3, cy + R * 0.42);
-  g.lineTo(cx - R * 0.3, cy + R * 0.42);
+  g.moveTo(cx - R * 0.02, cy - R * 0.46);
+  g.quadraticCurveTo(cx - R * 0.4, cy - R * 0.05, cx - R * 0.34, cy + R * 0.46);
+  g.lineTo(cx + R * 0.3, cy + R * 0.46);
+  g.quadraticCurveTo(cx + R * 0.34, cy - R * 0.02, cx + R * 0.18, cy - R * 0.4);
   g.closePath(); g.fill(); g.stroke();
-  // shadowed face
-  g.fillStyle = '#11161f';
-  g.beginPath(); g.arc(cx, cy - R * 0.12, R * 0.13, 0, Math.PI * 2); g.fill();
-  // dagger
-  g.strokeStyle = '#cfd6e0'; g.lineWidth = Math.max(1.5, R * 0.06);
-  g.beginPath(); g.moveTo(cx + R * 0.18, cy + R * 0.3); g.lineTo(cx + R * 0.34, cy + R * 0.02); g.stroke();
+  // hood
+  g.fillStyle = '#3c4d63';
+  g.beginPath();
+  g.moveTo(cx - R * 0.04, cy - R * 0.5);
+  g.quadraticCurveTo(cx + R * 0.26, cy - R * 0.44, cx + R * 0.2, cy - R * 0.14);
+  g.quadraticCurveTo(cx, cy - R * 0.06, cx - R * 0.18, cy - R * 0.16);
+  g.quadraticCurveTo(cx - R * 0.24, cy - R * 0.42, cx - R * 0.04, cy - R * 0.5);
+  g.closePath(); g.fill(); g.stroke();
+  // shadowed face opening
+  g.fillStyle = '#0b0f17';
+  g.beginPath(); g.ellipse(cx + R * 0.01, cy - R * 0.2, R * 0.1, R * 0.13, 0, 0, Math.PI * 2); g.fill();
+  // glowing eye
+  g.fillStyle = '#9fe0ff';
+  g.beginPath(); g.arc(cx + R * 0.03, cy - R * 0.21, R * 0.028, 0, Math.PI * 2); g.fill();
+  // belt
+  g.strokeStyle = '#1b2430'; g.lineWidth = Math.max(1.5, R * 0.06);
+  g.beginPath(); g.moveTo(cx - R * 0.24, cy + R * 0.12); g.lineTo(cx + R * 0.24, cy + R * 0.12); g.stroke();
+  // dagger held low, glinting
+  g.strokeStyle = '#7a5230'; g.lineWidth = Math.max(2, R * 0.06);
+  g.beginPath(); g.moveTo(cx + R * 0.26, cy + R * 0.34); g.lineTo(cx + R * 0.3, cy + R * 0.16); g.stroke();
+  g.strokeStyle = '#dfe6f0'; g.lineWidth = Math.max(1.5, R * 0.05);
+  g.beginPath(); g.moveTo(cx + R * 0.3, cy + R * 0.16); g.lineTo(cx + R * 0.36, cy - R * 0.08); g.stroke();
 }
 
 function drawSummoner(g, cx, cy, R) {
@@ -859,56 +877,67 @@ function drawWolf(g, cx, cy, R) {
   g.stroke();
 }
 
-function drawEagle(g, cx, cy, R) {
-  g.lineWidth = Math.max(1, R * 0.04);
-  g.strokeStyle = '#3a2a12';
-  // spread wings
-  g.fillStyle = '#6b4a26';
+// Griffon: lion hindquarters + eagle foreparts, wings spread.
+function drawGriffon(g, cx, cy, R) {
+  g.lineWidth = Math.max(1, R * 0.04); g.strokeStyle = '#3a2a12'; g.lineJoin = 'round';
+  // far wing (behind body)
+  g.fillStyle = '#7d5a2e';
   g.beginPath();
-  g.moveTo(cx, cy - R * 0.05);
-  g.quadraticCurveTo(cx - R * 0.5, cy - R * 0.4, cx - R * 0.6, cy - R * 0.05);
-  g.quadraticCurveTo(cx - R * 0.4, cy - R * 0.1, cx, cy + R * 0.1);
-  g.quadraticCurveTo(cx + R * 0.4, cy - R * 0.1, cx + R * 0.6, cy - R * 0.05);
-  g.quadraticCurveTo(cx + R * 0.5, cy - R * 0.4, cx, cy - R * 0.05);
+  g.moveTo(cx - R * 0.05, cy - R * 0.1);
+  g.quadraticCurveTo(cx - R * 0.5, cy - R * 0.5, cx - R * 0.64, cy - R * 0.12);
+  g.quadraticCurveTo(cx - R * 0.4, cy - R * 0.04, cx - R * 0.05, cy + R * 0.06);
   g.closePath(); g.fill(); g.stroke();
-  // wing feather lines
-  g.strokeStyle = '#4a3418'; g.lineWidth = Math.max(1, R * 0.03);
-  for (const s of [-1, 1]) {
-    g.beginPath();
-    g.moveTo(cx + s * R * 0.18, cy - R * 0.08);
-    g.lineTo(cx + s * R * 0.42, cy - R * 0.16);
-    g.stroke();
+  // lion hindquarters
+  g.fillStyle = '#c9923f';
+  g.beginPath(); g.ellipse(cx - R * 0.16, cy + R * 0.2, R * 0.26, R * 0.18, -0.2, 0, Math.PI * 2); g.fill(); g.stroke();
+  // back legs
+  g.strokeStyle = '#a9772e'; g.lineWidth = Math.max(2, R * 0.07); g.lineCap = 'round';
+  g.beginPath(); g.moveTo(cx - R * 0.3, cy + R * 0.3); g.lineTo(cx - R * 0.34, cy + R * 0.5); g.stroke();
+  g.beginPath(); g.moveTo(cx - R * 0.08, cy + R * 0.32); g.lineTo(cx - R * 0.1, cy + R * 0.52); g.stroke();
+  // lion tail with tuft
+  g.strokeStyle = '#c9923f'; g.lineWidth = Math.max(2, R * 0.06);
+  g.beginPath(); g.moveTo(cx - R * 0.4, cy + R * 0.18); g.quadraticCurveTo(cx - R * 0.6, cy + R * 0.1, cx - R * 0.52, cy - R * 0.12); g.stroke();
+  g.fillStyle = '#7a5230'; g.beginPath(); g.arc(cx - R * 0.52, cy - R * 0.16, R * 0.06, 0, Math.PI * 2); g.fill();
+  // eagle chest (front)
+  g.fillStyle = '#8a6a36'; g.strokeStyle = '#3a2a12'; g.lineWidth = Math.max(1, R * 0.04);
+  g.beginPath(); g.ellipse(cx + R * 0.16, cy + R * 0.06, R * 0.18, R * 0.24, 0.15, 0, Math.PI * 2); g.fill(); g.stroke();
+  // front talons
+  g.strokeStyle = '#f0b000'; g.lineWidth = Math.max(2, R * 0.06);
+  g.beginPath(); g.moveTo(cx + R * 0.1, cy + R * 0.3); g.lineTo(cx + R * 0.08, cy + R * 0.5); g.stroke();
+  g.beginPath(); g.moveTo(cx + R * 0.26, cy + R * 0.3); g.lineTo(cx + R * 0.28, cy + R * 0.5); g.stroke();
+  // near wing (spread, over body)
+  g.fillStyle = '#9a7335'; g.strokeStyle = '#3a2a12'; g.lineWidth = Math.max(1, R * 0.04);
+  g.beginPath();
+  g.moveTo(cx + R * 0.06, cy - R * 0.12);
+  g.quadraticCurveTo(cx + R * 0.5, cy - R * 0.52, cx + R * 0.66, cy - R * 0.06);
+  g.quadraticCurveTo(cx + R * 0.4, cy + R * 0.02, cx + R * 0.06, cy + R * 0.08);
+  g.closePath(); g.fill(); g.stroke();
+  g.strokeStyle = '#6b4a26'; g.lineWidth = Math.max(1, R * 0.03);
+  for (const t of [0.2, 0.42, 0.62]) {
+    g.beginPath(); g.moveTo(cx + R * 0.12, cy - R * 0.02); g.lineTo(cx + R * (0.12 + t), cy - R * (0.06 + t * 0.5)); g.stroke();
   }
-  // body
-  g.fillStyle = '#5a3c1e'; g.strokeStyle = '#3a2a12'; g.lineWidth = Math.max(1, R * 0.04);
-  g.beginPath(); g.ellipse(cx, cy + R * 0.16, R * 0.16, R * 0.26, 0, 0, Math.PI * 2); g.fill(); g.stroke();
-  // white head
-  g.fillStyle = '#f3f1ea';
-  g.beginPath(); g.arc(cx, cy - R * 0.14, R * 0.15, 0, Math.PI * 2); g.fill(); g.stroke();
-  // golden beak
+  // white eagle head
+  g.fillStyle = '#f3f1ea'; g.strokeStyle = '#3a2a12'; g.lineWidth = Math.max(1, R * 0.04);
+  g.beginPath(); g.arc(cx + R * 0.34, cy - R * 0.24, R * 0.15, 0, Math.PI * 2); g.fill(); g.stroke();
+  // golden hooked beak
   g.fillStyle = '#f0b000';
   g.beginPath();
-  g.moveTo(cx + R * 0.12, cy - R * 0.16);
-  g.lineTo(cx + R * 0.3, cy - R * 0.1);
-  g.lineTo(cx + R * 0.12, cy - R * 0.05);
+  g.moveTo(cx + R * 0.46, cy - R * 0.27);
+  g.lineTo(cx + R * 0.64, cy - R * 0.2);
+  g.quadraticCurveTo(cx + R * 0.5, cy - R * 0.12, cx + R * 0.44, cy - R * 0.16);
   g.closePath(); g.fill(); g.stroke();
   // eye
   g.fillStyle = '#1a1a2e';
-  g.beginPath(); g.arc(cx + R * 0.04, cy - R * 0.16, R * 0.03, 0, Math.PI * 2); g.fill();
-  // tiny crown — the baron rides it
+  g.beginPath(); g.arc(cx + R * 0.38, cy - R * 0.26, R * 0.032, 0, Math.PI * 2); g.fill();
+  // tiny crown (the baron's mount)
   g.fillStyle = '#ffd84a'; g.strokeStyle = '#b89020'; g.lineWidth = Math.max(1, R * 0.03);
   g.beginPath();
-  g.moveTo(cx - R * 0.1, cy - R * 0.26);
-  g.lineTo(cx - R * 0.1, cy - R * 0.34);
-  g.lineTo(cx - R * 0.03, cy - R * 0.28);
-  g.lineTo(cx + R * 0.04, cy - R * 0.36);
-  g.lineTo(cx + R * 0.04, cy - R * 0.26);
+  g.moveTo(cx + R * 0.24, cy - R * 0.36);
+  g.lineTo(cx + R * 0.24, cy - R * 0.44);
+  g.lineTo(cx + R * 0.31, cy - R * 0.38);
+  g.lineTo(cx + R * 0.38, cy - R * 0.46);
+  g.lineTo(cx + R * 0.38, cy - R * 0.36);
   g.closePath(); g.fill(); g.stroke();
-  // talons
-  g.strokeStyle = '#f0b000'; g.lineWidth = Math.max(1.5, R * 0.05); g.lineCap = 'round';
-  for (const s of [-0.08, 0.08]) {
-    g.beginPath(); g.moveTo(cx + s * R, cy + R * 0.4); g.lineTo(cx + s * R, cy + R * 0.5); g.stroke();
-  }
 }
 
 function roundRect(x, y, w, h, r) {
@@ -929,7 +958,7 @@ function selfDef(h) {
   if (h.building === 'castle') d = Math.max(d, 1);
   else if (h.building === 'tower') d = Math.max(d, 2);
   else if (h.building === 'strongTower' || h.building === 'ballista') d = Math.max(d, 3);
-  if (h.unit) d = Math.max(d, h.unit.level);
+  if (h.unit && h.unit.owner === h.owner) d = Math.max(d, h.unit.level);
   return d;
 }
 function neighborsOf(h) {
@@ -950,16 +979,22 @@ function hexDist(a, b) {
 }
 
 function defeatable(level, def) { return level > def || (level === 4 && def === 4); }
+function mergeableC(a, b) {
+  const ca = CAT[a.kind] || {}; const cb = CAT[b.kind] || {};
+  if (ca.special || cb.special) return false;
+  return a.level + b.level <= 4;
+}
+function adjacentToOwn(h) { return neighborsOf(h).some((n) => n.owner === YOU); }
 
-function canPlaceFriendly(h, spec) {
-  if (h.building && h.building !== 'farm') return false;
-  if (h.unit) {
-    const a = CAT[spec.kind] || {};
-    const b = CAT[h.unit.kind] || {};
-    if (a.special || b.special) return false;
-    return spec.level + h.unit.level <= 4;
-  }
-  return true;
+// Mirror of server canEnterForeign: can `spec` step onto foreign hex h?
+function canEnterForeignC(spec, h) {
+  const cat = CAT[spec.kind] || {};
+  const buildingBlocks = h.building && h.building !== 'farm';
+  const capture = !cat.noCapture && adjacentToOwn(h);
+  if (capture) return defeatable(spec.level, defenseOf(h));
+  if (buildingBlocks) return false;
+  if (cat.noCapture) return !h.unit;            // scout: stealthy, can't fight
+  return defeatable(spec.level, defenseOf(h));   // raider infiltrating deep
 }
 
 // Mirror of server moveOptions for an existing unit hex `uh`.
@@ -968,40 +1003,50 @@ function clientMoveOptions(uh) {
   const cap = new Set();
   const unit = uh.unit;
   const cat = CAT[unit.kind] || {};
-
-  if (cat.landAnywhere) {
-    for (const h of state.hexes) {
-      if (h === uh) continue;
-      if (h.owner === YOU) { if (canPlaceFriendly(h, unit)) reach.add(k(h.q, h.r)); }
-      else if (defeatable(unit.level, defenseOf(h))) cap.add(k(h.q, h.r));
-    }
-    return { reach, cap };
-  }
-
   const moveRange = cat.moveRange || 4;
-  const dist = new Map([[k(uh.q, uh.r), 0]]);
-  const queue = [uh];
-  const friendly = [uh];
-  while (queue.length) {
-    const c = queue.shift();
-    const d = dist.get(k(c.q, c.r));
-    if (d >= moveRange) continue;
-    for (const nb of neighborsOf(c)) {
-      if (nb.owner !== YOU) continue;
-      const nk = k(nb.q, nb.r);
-      if (dist.has(nk)) continue;
-      dist.set(nk, d + 1);
-      queue.push(nb); friendly.push(nb);
-      if (canPlaceFriendly(nb, unit)) reach.add(nk);
+  const onOwn = uh.owner === YOU;
+  const bases = [uh];
+
+  const consider = (h) => {
+    if (h === uh || h.owner !== YOU) return;
+    if (h.unit) {
+      if (h.unit.owner === YOU) { if (mergeableC(unit, h.unit)) reach.add(k(h.q, h.r)); }
+      else if (defeatable(unit.level, h.unit.level)) cap.add(k(h.q, h.r));
+    } else if (!h.building || h.building === 'farm') {
+      reach.add(k(h.q, h.r));
+    }
+  };
+
+  if (onOwn) {
+    const dist = new Map([[k(uh.q, uh.r), 0]]);
+    const queue = [uh];
+    while (queue.length) {
+      const c = queue.shift();
+      const d = dist.get(k(c.q, c.r));
+      if (d >= moveRange) continue;
+      for (const nb of neighborsOf(c)) {
+        if (nb.owner !== YOU) continue;
+        const nk = k(nb.q, nb.r);
+        if (dist.has(nk)) continue;
+        dist.set(nk, d + 1);
+        queue.push(nb); bases.push(nb);
+        consider(nb);
+      }
+    }
+  } else {
+    for (const h of state.hexes) {
+      if (hexDist(uh, h) <= moveRange && h.owner === YOU) consider(h);
     }
   }
-  if (!cat.noCapture) {
-    const cr = cat.captureReach || 1;
-    for (const h of state.hexes) {
-      if (h.owner === YOU) continue;
-      if (!defeatable(unit.level, defenseOf(h))) continue;
-      for (const f of friendly) { if (hexDist(f, h) <= cr) { cap.add(k(h.q, h.r)); break; } }
-    }
+
+  const cr = cat.captureReach || 1;
+  for (const h of state.hexes) {
+    if (h.owner === YOU) continue;
+    let near;
+    if (onOwn) near = bases.some((f) => hexDist(f, h) <= cr);
+    else near = hexDist(uh, h) <= moveRange;
+    if (!near) continue;
+    if (canEnterForeignC(unit, h)) cap.add(k(h.q, h.r));
   }
   return { reach, cap };
 }
@@ -1014,21 +1059,25 @@ function clientBuyOptions(kind) {
   const spec = { kind, level: cat.level };
   const members = provMembers.get(k(selectedProvince.q, selectedProvince.r)) || [];
 
+  const ownPlace = (h) => {
+    if (h.owner !== YOU) return;
+    if (h.unit) { if (h.unit.owner === YOU && mergeableC(spec, h.unit)) reach.add(k(h.q, h.r)); return; }
+    if (!h.building || h.building === 'farm') reach.add(k(h.q, h.r));
+  };
+
   if (cat.landAnywhere) {
     for (const h of state.hexes) {
-      if (h.owner === YOU) { if (canPlaceFriendly(h, spec)) reach.add(k(h.q, h.r)); }
-      else if (defeatable(spec.level, defenseOf(h))) cap.add(k(h.q, h.r));
+      if (h.owner === YOU) ownPlace(h);
+      else if (canEnterForeignC(spec, h)) cap.add(k(h.q, h.r));
     }
     return { reach, cap };
   }
-  for (const m of members) if (canPlaceFriendly(m, spec)) reach.add(k(m.q, m.r));
-  if (!cat.noCapture) {
-    const cr = cat.captureReach || 1;
-    for (const h of state.hexes) {
-      if (h.owner === YOU) continue;
-      if (!defeatable(spec.level, defenseOf(h))) continue;
-      for (const m of members) { if (hexDist(m, h) <= cr) { cap.add(k(h.q, h.r)); break; } }
-    }
+  for (const m of members) ownPlace(m);
+  const cr = cat.captureReach || 1;
+  for (const h of state.hexes) {
+    if (h.owner === YOU) continue;
+    if (!members.some((m) => hexDist(m, h) <= cr)) continue;
+    if (canEnterForeignC(spec, h)) cap.add(k(h.q, h.r));
   }
   return { reach, cap };
 }
@@ -1178,10 +1227,10 @@ function handleClick(sx, sy) {
     }
   }
 
-  // Select own movable unit
-  if (h.owner === YOU && h.unit && !h.unit.moved) {
+  // Select my movable unit (even an infiltrator standing on foreign soil)
+  if (h.unit && h.unit.owner === YOU && !h.unit.moved) {
     selectedUnit = { q: h.q, r: h.r }; selectedBallista = null;
-    if (h.province) selectedProvince = capitalCoord(h.province);
+    if (h.owner === YOU && h.province) selectedProvince = capitalCoord(h.province);
     computeHighlights(); renderPanel(); draw();
     return;
   }
@@ -1400,7 +1449,7 @@ $('btnEndGame').onclick = () => {
 
 const HAND_NAMES = {
   peasant: 'крестьянина', spearman: 'копейщика', baron: 'барона', knight: 'рыцаря',
-  horseman: 'всадника', scout: 'лазутчика', summoner: 'призывателя', eagle: 'барона на орле',
+  horseman: 'всадника', scout: 'лазутчика', summoner: 'призывателя', griffon: 'грифона',
   farm: 'ферму', tower: 'башню', strongTower: 'сильную башню', ballista: 'баллисту',
   thunder: 'громовой удар', meteor: 'метеор', earthquake: 'землетрясение', summon: 'призыв',
 };
@@ -1413,7 +1462,7 @@ function setHandUI() {
     let verb;
     if (isSpellKind(hand.kind)) verb = 'Примените';
     else if (hand.kind === 'summon') verb = 'Призовите на соседнюю клетку:';
-    else if (hand.kind === 'eagle') verb = 'Высадите';
+    else if (hand.kind === 'griffon') verb = 'Высадите';
     else verb = 'Поставьте';
     el.textContent = `${verb} ${HAND_NAMES[hand.kind]} — кликните по клетке (повторно — отмена)`;
     el.classList.remove('hidden');
@@ -1574,7 +1623,7 @@ function drawFx(R) {
     if (f.kind === 'spell' && f.spell === 'meteor') drawMeteorFx(f, t, R);
     else if (f.kind === 'spell' && f.spell === 'thunder') drawThunderFx(f, t, R);
     else if (f.kind === 'spell' && f.spell === 'earthquake') drawEarthquakeFx(f, t, R);
-    else if (f.kind === 'land') drawEagleFx(f, t, R);
+    else if (f.kind === 'land') drawGriffonFx(f, t, R);
   }
 }
 
@@ -1670,17 +1719,21 @@ function drawEarthquakeFx(f, t, R) {
   ctx.globalAlpha = 1;
 }
 
-function drawEagleFx(f, t, R) {
+function drawGriffonFx(f, t, R) {
   const b = fxScreen(f.to);
-  // eagle swoops down from above the target
+  // griffon swoops down from the upper-right onto the target
   const y = b.y - (1 - t) * R * 6;
-  const x = b.x - (1 - t) * R * 2;
-  const sc = 1 + (1 - t) * 1.4; // bigger while high up
+  const x = b.x + (1 - t) * R * 2.4;
+  const sc = 1 + (1 - t) * 1.4; // larger while high up
+  // faint shadow growing on the ground as it descends
+  ctx.save();
+  ctx.globalAlpha = 0.25 * t;
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.ellipse(b.x, b.y + R * 0.5, R * 0.4 * (0.4 + t * 0.6), R * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
   ctx.save();
   ctx.globalAlpha = t < 0.85 ? 1 : (1 - (t - 0.85) / 0.15);
-  // motion shadow on target
-  ctx.globalAlpha *= 0.9;
-  drawEagle(ctx, x, y, R * sc);
+  drawGriffon(ctx, x, y, R * sc);
   ctx.restore();
   // dust puff on impact
   if (t > 0.8) {
@@ -1720,19 +1773,46 @@ function addChatMessage(msg) {
 
 function systemChat(html) { addChatMessage({ system: true, html }); }
 
+const SPELL_ICONS = { thunder: '⚡', meteor: '☄️', earthquake: '🌋' };
+
+function nameSpan(idx) {
+  const p = state.players[idx];
+  const col = p ? p.color : '#9aa3b2';
+  const nm = p ? escapeHtml(p.name) : '?';
+  return `<b style="color:${col}">${nm}</b>`;
+}
+
 function logSpell(ev) {
-  const who = state.players[ev.by];
-  const col = who ? who.color : '#9aa3b2';
-  const nm = who ? escapeHtml(who.name) : '?';
-  systemChat(`☄ <b style="color:${col}">${nm}</b> применил <b>${SPELL_NAMES[ev.spell] || ev.spell}</b>`);
-  toast(`${who ? who.name : '?'}: ${SPELL_NAMES[ev.spell] || ev.spell}`);
+  const icon = SPELL_ICONS[ev.spell] || '✨';
+  const spell = SPELL_NAMES[ev.spell] || ev.spell;
+  const tgt = (ev.target != null && ev.target !== ev.by) ? ` → ${nameSpan(ev.target)}` : '';
+  systemChat(`${icon} ${nameSpan(ev.by)} → <b>${spell}</b>${tgt}`);
+  killFeed(`${icon} ${nameSpan(ev.by)} <span class="kf-arrow">→</span> ${spell}${tgt}`);
 }
 
 function logLand(ev) {
-  const who = state.players[ev.by];
-  const col = who ? who.color : '#9aa3b2';
-  const nm = who ? escapeHtml(who.name) : '?';
-  systemChat(`🦅 <b style="color:${col}">${nm}</b> высадил барона на орле`);
+  systemChat(`🦅 ${nameSpan(ev.by)} высадил <b>грифона</b>`);
+  killFeed(`🦅 ${nameSpan(ev.by)} <span class="kf-arrow">→</span> высадка грифона`);
+}
+
+// shooter-style kill-feed banner at the top of the screen
+let killFeedTimers = [];
+function killFeed(html) {
+  const wrap = $('killfeed');
+  if (!wrap) return;
+  const line = document.createElement('div');
+  line.className = 'kf-line';
+  line.innerHTML = html;
+  wrap.appendChild(line);
+  // fade-in then auto-remove
+  requestAnimationFrame(() => line.classList.add('show'));
+  const tmr = setTimeout(() => {
+    line.classList.remove('show');
+    setTimeout(() => line.remove(), 400);
+  }, 4200);
+  killFeedTimers.push(tmr);
+  // cap to 4 visible lines
+  while (wrap.children.length > 4) wrap.removeChild(wrap.firstChild);
 }
 
 function sendChat() {

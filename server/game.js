@@ -25,7 +25,9 @@ const UNIT_CATALOG = {
   scout: { level: 1, cost: 15, upkeep: 4, stealth: true, special: true, moveRange: 4, noCapture: true },
   summoner: { level: 2, cost: 35, upkeep: 12, special: true, moveRange: 4, captureReach: 1 },
   wolf: { level: 1, cost: 0, upkeep: 0, special: true, summonOnly: true, moveRange: 4, captureReach: 1 },
-  eagle: { level: 3, cost: 120, upkeep: 18, special: true, landAnywhere: true, moveRange: 99, captureReach: 99 },
+  // griffon: flies anywhere ONLY on the turn it's bought (landAnywhere). Once on
+  // the board it moves like a baron (range 4, reach 1). 3-turn TTL off home soil.
+  griffon: { level: 3, cost: 120, upkeep: 18, special: true, landAnywhere: true, moveRange: 4, captureReach: 1 },
 };
 
 // One-time state upgrades, purchased once per player from a province treasury.
@@ -175,7 +177,7 @@ class Game {
         const spot = nbs[Math.floor(Math.random() * nbs.length)];
         spot.owner = i;
         spot.tree = false;
-        spot.unit = { level: 1, kind: 'peasant', moved: false };
+        spot.unit = { level: 1, kind: 'peasant', moved: false, owner: i };
       }
     });
 
@@ -286,10 +288,12 @@ class Game {
 
   // ---- defense / combat ----------------------------------------------------
 
+  // A unit only defends the tile if it belongs to the tile's owner. Infiltrators
+  // (a unit whose owner differs from the tile owner) do NOT fortify the tile.
   hexSelfDefense(h) {
     let d = 0;
     if (h.building) d = Math.max(d, BUILDING_DEFENSE[h.building] || 0);
-    if (h.unit) d = Math.max(d, h.unit.level);
+    if (h.unit && h.unit.owner === h.owner) d = Math.max(d, h.unit.level);
     return d;
   }
 
@@ -302,74 +306,105 @@ class Game {
     return d;
   }
 
-  // A unit defeats a hex if its level strictly exceeds the defense — with one
-  // exception: a level-4 unit (knight / eagle) can break an equal level-4
-  // defense, so a knight is able to kill another knight.
+  // A unit defeats a defense if its level strictly exceeds it — with one
+  // exception: a level-4 unit (knight) can break an equal level-4 defense,
+  // so a knight is able to kill another knight.
   defeatable(level, def) {
     return level > def || (level === 4 && def === 4);
   }
 
-  // Can a friendly unit `spec` occupy this owned hex (move/merge target)?
-  canPlaceFriendly(h, spec) {
-    if (h.building && h.building !== 'farm') return false; // only farms are walkable
-    if (h.unit) {
-      const a = UNIT_CATALOG[spec.kind] || {};
-      const b = UNIT_CATALOG[h.unit.kind] || {};
-      if (a.special || b.special) return false;
-      return spec.level + h.unit.level <= 4;
-    }
-    return true;
+  mergeable(a, b) {
+    const ca = UNIT_CATALOG[a.kind] || {};
+    const cb = UNIT_CATALOG[b.kind] || {};
+    if (ca.special || cb.special) return false;
+    return a.level + b.level <= 4;
   }
 
-  // Reachable friendly tiles + capturable enemy tiles for an existing unit.
+  adjacentToOwner(to, player) {
+    return this.neighbors(to).some((n) => n.owner === player);
+  }
+
+  // Can unit `spec` (owner `player`) step onto a foreign tile `to`?
+  // Returns { capture } if allowed (capture=true ⇒ takes the tile/color,
+  // capture=false ⇒ infiltrates: stands there, no color, sabotages a farm),
+  // or null if the move is impossible.
+  canEnterForeign(spec, to, player) {
+    const cat = UNIT_CATALOG[spec.kind] || {};
+    const buildingBlocks = to.building && to.building !== 'farm';
+    const capture = !cat.noCapture && this.adjacentToOwner(to, player);
+
+    if (capture) {
+      if (!this.defeatable(spec.level, this.defenseOf(to))) return null;
+      return { capture: true };
+    }
+    // infiltration (no ownership change)
+    if (buildingBlocks) return null; // can't perch on a tower / castle
+    if (cat.noCapture) {
+      // saboteur (scout): stealthy, ignores defence but can't fight a unit
+      if (to.unit) return null;
+      return { capture: false };
+    }
+    // raider infiltrating deep: must still beat the defence (incl. any unit)
+    if (!this.defeatable(spec.level, this.defenseOf(to))) return null;
+    return { capture: false };
+  }
+
+  // Reachable friendly tiles + actionable enemy tiles for an existing unit.
   moveOptions(from) {
     const unit = from.unit;
-    const player = from.owner;
+    const player = unit.owner;
     const cat = UNIT_CATALOG[unit.kind] || {};
     const reachable = new Set();
     const capturable = new Set();
-
-    if (cat.landAnywhere) {
-      for (const h of this.hexes.values()) {
-        if (h === from) continue;
-        if (h.owner === player) {
-          if (this.canPlaceFriendly(h, unit)) reachable.add(key(h.q, h.r));
-        } else if (this.defeatable(unit.level, this.defenseOf(h))) {
-          capturable.add(key(h.q, h.r));
-        }
-      }
-      return { reachable, capturable };
-    }
-
-    // BFS over own connected tiles, limited by moveRange steps
     const moveRange = cat.moveRange || BASE_MOVE;
-    const dist = new Map([[key(from.q, from.r), 0]]);
-    const queue = [from];
-    const friendlyReach = [from];
-    while (queue.length) {
-      const c = queue.shift();
-      const d = dist.get(key(c.q, c.r));
-      if (d >= moveRange) continue;
-      for (const nb of this.neighbors(c)) {
-        if (nb.owner !== player) continue;
-        const nk = key(nb.q, nb.r);
-        if (dist.has(nk)) continue;
-        dist.set(nk, d + 1);
-        queue.push(nb);
-        friendlyReach.push(nb);
-        if (this.canPlaceFriendly(nb, unit)) reachable.add(nk);
+    const onOwn = from.owner === player;
+    const bases = [from];
+
+    const consider = (h) => {
+      if (h === from) return;
+      if (h.owner === player) {
+        if (h.unit) {
+          if (h.unit.owner === player) { if (this.mergeable(unit, h.unit)) reachable.add(key(h.q, h.r)); }
+          else if (this.defeatable(unit.level, h.unit.level)) capturable.add(key(h.q, h.r)); // kill infiltrator on own land
+        } else if (!h.building || h.building === 'farm') {
+          reachable.add(key(h.q, h.r));
+        }
+      }
+    };
+
+    if (onOwn) {
+      // BFS across own connected land, limited by moveRange steps
+      const dist = new Map([[key(from.q, from.r), 0]]);
+      const queue = [from];
+      while (queue.length) {
+        const c = queue.shift();
+        const d = dist.get(key(c.q, c.r));
+        if (d >= moveRange) continue;
+        for (const nb of this.neighbors(c)) {
+          if (nb.owner !== player) continue;
+          const nk = key(nb.q, nb.r);
+          if (dist.has(nk)) continue;
+          dist.set(nk, d + 1);
+          queue.push(nb); bases.push(nb);
+          consider(nb);
+        }
+      }
+    } else {
+      // infiltrator standing on foreign soil: roam within a radius
+      for (const h of this.hexes.values()) {
+        if (hexDistance(from, h) <= moveRange && h.owner === player) consider(h);
       }
     }
 
-    if (!cat.noCapture) {
-      const reach = cat.captureReach || 1;
-      for (const h of this.hexes.values()) {
-        if (h.owner === player) continue;
-        if (!this.defeatable(unit.level, this.defenseOf(h))) continue;
-        for (const f of friendlyReach) {
-          if (hexDistance(f, h) <= reach) { capturable.add(key(h.q, h.r)); break; }
-        }
-      }
+    // foreign targets (capture or infiltrate)
+    const cr = cat.captureReach || 1;
+    for (const h of this.hexes.values()) {
+      if (h.owner === player) continue;
+      let near;
+      if (onOwn) near = bases.some((f) => hexDistance(f, h) <= cr);
+      else near = hexDistance(from, h) <= moveRange;
+      if (!near) continue;
+      if (this.canEnterForeign(unit, h, player)) capturable.add(key(h.q, h.r));
     }
     return { reachable, capturable };
   }
@@ -382,29 +417,26 @@ class Game {
     const reachable = new Set();
     const capturable = new Set();
 
+    const ownPlace = (h) => {
+      if (h.owner !== player) return;
+      if (h.unit) { if (h.unit.owner === player && this.mergeable(spec, h.unit)) reachable.add(key(h.q, h.r)); return; }
+      if (!h.building || h.building === 'farm') reachable.add(key(h.q, h.r));
+    };
+
     if (cat.landAnywhere) {
       for (const h of this.hexes.values()) {
-        if (h.owner === player) {
-          if (this.canPlaceFriendly(h, spec)) reachable.add(key(h.q, h.r));
-        } else if (this.defeatable(spec.level, this.defenseOf(h))) {
-          capturable.add(key(h.q, h.r));
-        }
+        if (h.owner === player) ownPlace(h);
+        else if (this.canEnterForeign(spec, h, player)) capturable.add(key(h.q, h.r));
       }
       return { reachable, capturable };
     }
 
-    for (const m of prov.members) {
-      if (this.canPlaceFriendly(m, spec)) reachable.add(key(m.q, m.r));
-    }
-    if (!cat.noCapture) {
-      const reach = cat.captureReach || 1;
-      for (const h of this.hexes.values()) {
-        if (h.owner === player) continue;
-        if (!this.defeatable(spec.level, this.defenseOf(h))) continue;
-        for (const m of prov.members) {
-          if (hexDistance(m, h) <= reach) { capturable.add(key(h.q, h.r)); break; }
-        }
-      }
+    for (const m of prov.members) ownPlace(m);
+    const cr = cat.captureReach || 1;
+    for (const h of this.hexes.values()) {
+      if (h.owner === player) continue;
+      if (!prov.members.some((m) => hexDistance(m, h) <= cr)) continue;
+      if (this.canEnterForeign(spec, h, player)) capturable.add(key(h.q, h.r));
     }
     return { reachable, capturable };
   }
@@ -425,9 +457,11 @@ class Game {
     return false;
   }
 
-  // Strip an eliminated player's leftover lone tiles back to neutral.
+  // Strip an eliminated player's leftover lone tiles back to neutral and remove
+  // any of their units still deployed (incl. infiltrators on foreign soil).
   neutralizePlayer(idx) {
     for (const h of this.hexes.values()) {
+      if (h.unit && h.unit.owner === idx) h.unit = null;
       if (h.owner !== idx) continue;
       h.owner = null; h.unit = null; h.building = null;
       h.fired = false; h.money = 0; h.gravestone = false; h.farmBoost = false;
@@ -465,13 +499,13 @@ class Game {
         if (h.tree) income -= 1; else income += 1;
         if (h.building === 'farm') income += h.farmBoost ? FARM_INCOME_UPGRADED : FARM_INCOME;
         if (h.building && BUILDING_UPKEEP[h.building]) upkeep += BUILDING_UPKEEP[h.building];
-        if (h.unit) upkeep += unitUpkeep(h.unit);
+        if (h.unit && h.unit.owner === me) upkeep += unitUpkeep(h.unit);
       }
       income -= upkeep;
       prov.capital.money += income;
       if (prov.capital.money < 0) {
         prov.capital.money = 0;
-        for (const h of prov.members) if (h.unit) { h.unit = null; h.gravestone = true; }
+        for (const h of prov.members) if (h.unit && h.unit.owner === me) { h.unit = null; h.gravestone = true; }
       } else {
         for (const h of prov.members) fundedHexes.add(key(h.q, h.r));
       }
@@ -479,14 +513,15 @@ class Game {
 
     // wolf TTL countdown (summoner-summoned wolves live WOLF_TTL turns then die)
     for (const h of this.hexes.values()) {
-      if (h.owner !== me || !h.unit || h.unit.kind !== 'wolf') continue;
+      if (!h.unit || h.unit.owner !== me || h.unit.kind !== 'wolf') continue;
       h.unit.ttl = (h.unit.ttl || 1) - 1;
       if (h.unit.ttl <= 0) { h.unit = null; h.gravestone = true; }
     }
 
-    // stranded units: those on unfunded lone hexes die after STRANDED_LIMIT turns
+    // stranded units: my units sitting off funded home soil (incl. infiltrators
+    // and raiders behind enemy lines) die after STRANDED_LIMIT turns.
     for (const h of this.hexes.values()) {
-      if (h.owner !== me || !h.unit) continue;
+      if (!h.unit || h.unit.owner !== me) continue;
       if (h.unit.kind === 'wolf') continue; // wolves use their own TTL instead
       if (fundedHexes.has(key(h.q, h.r))) {
         h.unit.stranded = 0;
@@ -496,15 +531,14 @@ class Game {
       }
     }
 
-    // refresh actions for current player's pieces; consume stun
+    // refresh actions for all of my pieces (wherever they stand); consume stun
     for (const h of this.hexes.values()) {
-      if (h.owner !== me) continue;
-      if (h.unit) {
+      if (h.unit && h.unit.owner === me) {
         if (h.unit.stunned) { h.unit.stunned = false; h.unit.moved = true; }
         else h.unit.moved = false;
         h.unit.summoned = false;
       }
-      if (h.building === 'ballista') h.fired = false;
+      if (h.owner === me && h.building === 'ballista') h.fired = false;
     }
   }
 
@@ -623,39 +657,59 @@ class Game {
 
   placeUnit(player, prov, from, to, spec, fresh) {
     const cat = UNIT_CATALOG[spec.kind] || {};
+    const mk = (moved) => {
+      const u = { level: spec.level, kind: spec.kind, moved, owner: player };
+      if (spec.ttl) u.ttl = spec.ttl;
+      return u;
+    };
 
     if (to.owner === player) {
-      // friendly tile: merge or reposition
-      if (to.building && to.building !== 'farm') return this.fail('Юнита нельзя ставить на здание');
-      if (to.unit) {
-        const specSpecial = cat.special;
-        const targetSpecial = UNIT_CATALOG[to.unit.kind] && UNIT_CATALOG[to.unit.kind].special;
-        if (specSpecial || targetSpecial) return this.fail('Этот юнит не объединяется');
-        const combined = spec.level + to.unit.level;
-        if (combined > 4) return this.fail('Юниты не объединяются (макс. уровень 4)');
-        const mergedMoved = (from ? from.unit.moved : false) || to.unit.moved;
-        to.unit = { level: combined, kind: deriveKind(combined), moved: mergedMoved };
+      // own tile: merge / reposition, or kill an enemy infiltrator squatting here
+      if (to.unit && to.unit.owner !== player) {
+        if (!this.defeatable(spec.level, to.unit.level)) return this.fail('Здесь слишком сильный вражеский юнит');
+        to.unit = mk(true);
         to.gravestone = false;
         if (from) from.unit = null;
         return true;
       }
-      const movedFlag = fresh ? false : true;
+      if (to.building && to.building !== 'farm') return this.fail('Юнита нельзя ставить на здание');
+      if (to.unit) {
+        if (!this.mergeable(spec, to.unit)) return this.fail('Эти юниты не объединяются');
+        const combined = spec.level + to.unit.level;
+        const mergedMoved = (from ? from.unit.moved : false) || to.unit.moved;
+        to.unit = { level: combined, kind: deriveKind(combined), moved: mergedMoved, owner: player };
+        to.gravestone = false;
+        if (from) from.unit = null;
+        return true;
+      }
       if (to.tree) { to.tree = false; this.addMoney(prov, 3); }
       to.gravestone = false;
-      to.unit = { level: spec.level, kind: spec.kind, moved: movedFlag };
+      to.unit = mk(fresh ? false : true);
       if (from) from.unit = null;
       return true;
     }
 
-    // enemy / neutral tile: capture
-    const def = this.defenseOf(to);
-    if (!this.defeatable(spec.level, def)) return this.fail('Клетка слишком хорошо защищена');
-    if (to.tree) this.addMoney(prov, 3);
-    to.owner = player;
-    to.tree = false; to.gravestone = false; to.building = null; to.fired = false; to.farmBoost = false;
-    to.unit = { level: spec.level, kind: spec.kind, moved: true };
+    // foreign tile: decide capture vs infiltration
+    const res = this.canEnterForeign(spec, to, player);
+    if (!res) return this.fail('Туда нельзя пойти');
+
+    if (res.capture) {
+      if (to.tree) this.addMoney(prov, 3);
+      to.owner = player;
+      to.tree = false; to.gravestone = false; to.building = null; to.fired = false; to.farmBoost = false;
+      to.unit = mk(true);
+      if (from) from.unit = null;
+      this.recomputeProvinces();
+      return true;
+    }
+
+    // infiltration: stand on the tile WITHOUT taking it; sabotage a farm
+    if (to.building === 'farm') { to.building = null; to.farmBoost = false; }
+    if (to.unit && to.unit.owner !== player) to.unit = null; // raider killed the defender
+    if (to.tree) to.tree = false;
+    to.gravestone = false;
+    to.unit = mk(true);
     if (from) from.unit = null;
-    this.recomputeProvinces();
     return true;
   }
 
@@ -663,7 +717,7 @@ class Game {
     const from = this.resolveHex(action.from);
     const to = this.resolveHex(action.to);
     if (!from || !to) return this.fail('Нет такой клетки');
-    if (from.owner !== player || !from.unit) return this.fail('Здесь нет вашего юнита');
+    if (!from.unit || from.unit.owner !== player) return this.fail('Здесь нет вашего юнита');
     if (from.unit.moved) return this.fail('Этот юнит уже ходил');
     if (from === to) return this.fail('Юнит уже здесь');
 
@@ -671,13 +725,9 @@ class Game {
     const tk = key(to.q, to.r);
     if (!reachable.has(tk) && !capturable.has(tk)) return this.fail('Туда нельзя пойти');
 
-    const kind = from.unit.kind;
-    const prov = this.provinceOf(from);
-    const ok = this.placeUnit(player, prov, from, to, from.unit, false);
-    if (ok && kind === 'eagle' && capturable.has(tk)) {
-      this.lastEvents.push({ kind: 'land', unit: 'eagle', to: { q: to.q, r: to.r }, by: player });
-    }
-    return ok;
+    // a griffon already on the board just walks like a baron — no landing fx
+    const prov = from.owner === player ? this.provinceOf(from) : { capital: null, members: [from] };
+    return this.placeUnit(player, prov, from, to, from.unit, false);
   }
 
   actBuyUnit(player, action) {
@@ -702,8 +752,8 @@ class Game {
     cap.money -= cost;
     const ok = this.placeUnit(player, prov, null, to, spec, true);
     if (!ok) { cap.money += cost; return ok; }
-    if (action.kind === 'eagle') {
-      this.lastEvents.push({ kind: 'land', unit: 'eagle', to: { q: to.q, r: to.r }, by: player });
+    if (action.kind === 'griffon') {
+      this.lastEvents.push({ kind: 'land', unit: 'griffon', to: { q: to.q, r: to.r }, by: player });
     }
     return ok;
   }
@@ -749,9 +799,8 @@ class Game {
     if (!from || from.owner !== player || from.building !== 'ballista') return this.fail('Нет вашей баллисты');
     if (from.fired) return this.fail('Баллиста уже стреляла в этот ход');
     if (!to) return this.fail('Нет такой клетки');
-    if (to.owner === player) return this.fail('Нельзя бить по своим');
     if (hexDistance(from, to) > BALLISTA_RANGE) return this.fail('Цель вне радиуса');
-    if (!to.unit) return this.fail('В цели нет юнита');
+    if (!to.unit || to.unit.owner === player) return this.fail('В цели нет вражеского юнита');
     if (to.unit.level > BALLISTA_LEVEL) return this.fail('Слишком сильный юнит (нужен 4-й уровень)');
     to.unit = null;
     to.gravestone = true;
@@ -763,7 +812,7 @@ class Game {
   actSummon(player, action) {
     const from = this.resolveHex(action.from);
     const to = this.resolveHex(action.to);
-    if (!from || from.owner !== player || !from.unit || from.unit.kind !== 'summoner') {
+    if (!from || !from.unit || from.unit.owner !== player || from.unit.kind !== 'summoner') {
       return this.fail('Нет вашего призывателя');
     }
     if (from.unit.summoned) return this.fail('Призыватель уже призывал в этот ход');
@@ -772,7 +821,7 @@ class Game {
     if (to.unit) return this.fail('Клетка занята');
     if (to.building && to.building !== 'farm') return this.fail('Здесь нельзя призвать');
     if (to.tree) return this.fail('Сначала уберите дерево');
-    to.unit = { level: 1, kind: 'wolf', moved: true, ttl: 3 };
+    to.unit = { level: 1, kind: 'wolf', moved: true, ttl: 3, owner: player };
     to.gravestone = false;
     from.unit.summoned = true;
     return true;
@@ -789,17 +838,22 @@ class Game {
     const to = this.resolveHex(action.to);
     if (!to) return this.fail('Нет такой клетки');
 
+    // figure out whose piece is being hit (for the kill-feed announcement)
+    let target = null;
+    if (to.unit) target = to.unit.owner;
+    else if (to.owner != null && to.owner !== player) target = to.owner;
+
     if (action.spell === 'meteor') {
       if (to.unit) {
         if (to.unit.level > 3) return this.fail('Метеор не пробивает рыцаря');
         to.unit = null; to.gravestone = true;
       } else if (to.building && to.building !== 'castle') {
-        to.building = null; to.fired = false;
+        to.building = null; to.fired = false; to.farmBoost = false;
       } else {
         return this.fail('В цели нечего разрушать');
       }
     } else if (action.spell === 'thunder') {
-      if (!to.unit || to.owner === player) return this.fail('Цель — вражеский юнит');
+      if (!to.unit || to.unit.owner === player) return this.fail('Цель — вражеский юнит');
       to.unit.stunned = true;
       to.unit.moved = true;
     } else if (action.spell === 'earthquake') {
@@ -813,7 +867,7 @@ class Game {
     cap.money -= spell.cost;
     this.lastEvents.push({
       kind: 'spell', spell: action.spell,
-      from: { q: cap.q, r: cap.r }, to: { q: to.q, r: to.r }, by: player,
+      from: { q: cap.q, r: cap.r }, to: { q: to.q, r: to.r }, by: player, target,
     });
     this.recomputeProvinces();
     return true;
@@ -848,7 +902,7 @@ class Game {
         if (h.tree) income -= 1; else income += 1;
         if (h.building === 'farm') income += h.farmBoost ? FARM_INCOME_UPGRADED : FARM_INCOME;
         if (h.building && BUILDING_UPKEEP[h.building]) upkeep += BUILDING_UPKEEP[h.building];
-        if (h.unit) upkeep += unitUpkeep(h.unit);
+        if (h.unit && h.unit.owner === prov.capital.owner) upkeep += unitUpkeep(h.unit);
         provByHex.set(key(h.q, h.r), key(prov.capital.q, prov.capital.r));
       }
       const owner = prov.capital.owner;
@@ -869,14 +923,14 @@ class Game {
       let unit = h.unit;
       // stealth: hide enemy scouts unless adjacent to the viewer's territory
       if (unit && UNIT_CATALOG[unit.kind] && UNIT_CATALOG[unit.kind].stealth
-          && forPlayer != null && h.owner !== forPlayer) {
+          && forPlayer != null && unit.owner !== forPlayer) {
         const revealed = this.neighbors(h).some((n) => n.owner === forPlayer);
         if (!revealed) unit = null;
       }
       hexes.push({
         q: h.q, r: h.r, owner: h.owner, building: h.building,
         unit: unit ? {
-          level: unit.level, moved: unit.moved, kind: unit.kind,
+          level: unit.level, moved: unit.moved, kind: unit.kind, owner: unit.owner,
           stunned: !!unit.stunned, stranded: unit.stranded || 0,
           summoned: !!unit.summoned, ttl: unit.ttl || 0,
         } : null,
