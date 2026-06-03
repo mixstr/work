@@ -91,8 +91,17 @@
       <span id="turnTag" class="tag"></span>
       <span id="timerTag" class="tag hidden"></span>
       <span style="flex:1"></span>
+      <button id="chatToggle" class="tag tagbtn chatbtn">💬 Чат</button>
       <button id="btnInfo" class="tag tagbtn info">ℹ Бестиарий</button>
       <button id="btnEndGame" class="tag tagbtn hidden">Завершить игру</button>
+    </div>
+
+    <div id="chat" class="chat collapsed">
+      <div id="chatLog" class="chat-log"></div>
+      <div class="chat-input-row">
+        <input id="chatInput" maxlength="240" placeholder="Сообщение…" autocomplete="off" />
+        <button id="chatSend">▶</button>
+      </div>
     </div>
 
     <div id="panel">
@@ -104,6 +113,7 @@
         <button id="btnUnit" class="buy">Юниты ▲</button>
         <button id="btnBuild" class="buy">Постройки ▲</button>
         <button id="btnSpell" class="buy">Заклинания ▲</button>
+        <button id="btnUpgrade" class="buy">Держава ▲</button>
         <button id="btnAbility" class="buy hidden">Призвать</button>
       </div>
       <div id="hand" class="hand hidden"></div>

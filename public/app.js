@@ -71,13 +71,29 @@ const UNIT_DEFS = [
   { kind: 'horseman', level: 2, cost: 25, name: 'Всадник', sub: 'ур.2 · содерж. 10', desc: 'Сила копейщика, дальность ×1.5 (рейды на 2 гекса). Вне своей провинции живёт 3 хода.' },
   { kind: 'scout', level: 1, cost: 15, name: 'Лазутчик', sub: 'ур.1 · содерж. 4', desc: 'Скрытность: невидим врагу, пока не подойдёт к его земле. Диверсант.' },
   { kind: 'summoner', level: 2, cost: 35, name: 'Призыватель', sub: 'ур.2 · содерж. 12', desc: 'Раз в ход бесплатно призывает волка на соседнюю свою клетку. Волк живёт 2 хода, сила 1, бесплатен.' },
+  { kind: 'eagle', level: 4, cost: 120, name: 'Барон на орле', sub: 'ур.4 · содерж. 18', desc: 'Рейдовый воин: высаживается в ЛЮБУЮ клетку карты (если пробивает защиту). Сила рыцаря. Вне своей территории живёт 3 хода.' },
   { kind: 'wolf', level: 1, cost: 0, name: 'Волк', sub: 'TTL 2 хода · бесплатно', desc: 'Призывается призывателем. Живёт 2 хода, сила уровня 1, не объединяется. Захватывает незащищённые клетки.', summonedOnly: true },
+];
+// movement / combat attributes mirrored from the server catalog (for highlights)
+const CAT = {
+  peasant: { level: 1, moveRange: 4, captureReach: 1 },
+  spearman: { level: 2, moveRange: 4, captureReach: 1 },
+  baron: { level: 3, moveRange: 4, captureReach: 1 },
+  knight: { level: 4, moveRange: 4, captureReach: 1 },
+  horseman: { level: 2, moveRange: 6, captureReach: 2, special: true },
+  scout: { level: 1, moveRange: 4, special: true, noCapture: true },
+  summoner: { level: 2, moveRange: 4, captureReach: 1, special: true },
+  wolf: { level: 1, moveRange: 4, captureReach: 1, special: true },
+  eagle: { level: 4, moveRange: 99, captureReach: 99, special: true, landAnywhere: true },
+};
+const UPGRADE_DEFS = [
+  { kind: 'farmIncome', cost: 200, name: 'Аграрная реформа', sub: 'фермы ×2 дохода', desc: 'Покупается один раз за игру. Доход со всех ваших ферм удваивается (+8 вместо +4).' },
 ];
 const BUILD_DEFS = [
   { kind: 'farm', cost: 12, name: 'Ферма', sub: '+4 к доходу', desc: 'Строится рядом со столицей или другой фермой. Каждая следующая дороже на 2.' },
   { kind: 'tower', cost: 15, name: 'Башня', sub: 'защита 2', desc: 'Защищает себя и соседние клетки на уровень 2.' },
   { kind: 'strongTower', cost: 35, name: 'Сильная башня', sub: 'защита 3', desc: 'Защита 3 уровня — пробивает только рыцарь.' },
-  { kind: 'ballista', cost: 80, name: 'Баллиста', sub: 'защита 3 · содерж. 60', desc: 'Не двигается. Раз в ход бьёт по вражескому юниту в радиусе 2 (до ур.3). Ломается рыцарём.' },
+  { kind: 'ballista', cost: 80, name: 'Баллиста', sub: 'защита 3 · содерж. 45', desc: 'Не двигается. Раз в ход бьёт по вражескому юниту в радиусе 2 (до ур.3). Ломается рыцарём.' },
 ];
 const SPELL_DEFS = [
   { kind: 'thunder', cost: 30, name: 'Громовой удар', sub: 'оглушение', desc: 'Оглушает вражеского юнита — он пропускает свой следующий ход.' },
@@ -87,9 +103,11 @@ const SPELL_DEFS = [
 const UNIT_KINDS = UNIT_DEFS.map((u) => u.kind);
 const BUILD_KINDS = BUILD_DEFS.map((b) => b.kind);
 const SPELL_KINDS = SPELL_DEFS.map((s) => s.kind);
+const UPGRADE_KINDS = UPGRADE_DEFS.map((u) => u.kind);
 const isUnitKind = (kind) => UNIT_KINDS.includes(kind);
 const isBuildKind = (kind) => BUILD_KINDS.includes(kind);
 const isSpellKind = (kind) => SPELL_KINDS.includes(kind);
+const isUpgradeKind = (kind) => UPGRADE_KINDS.includes(kind);
 function unitDef(kind) { return UNIT_DEFS.find((u) => u.kind === kind); }
 function defByKind(kind) {
   return UNIT_DEFS.concat(BUILD_DEFS, SPELL_DEFS).find((d) => d.kind === kind);
@@ -118,6 +136,10 @@ function onServer(msg) {
       YOU = msg.you; turnDeadline = msg.turnDeadline || null; ingestState(msg.game); show('game'); break;
     case 'gameEnded':
       state = null; clearSelection(); $('overlay').classList.add('hidden'); show('lobby'); break;
+    case 'fx':
+      handleFx(msg.events); break;
+    case 'chat':
+      addChatMessage(msg); break;
     case 'error':
       showError(msg.message); break;
   }
@@ -396,11 +418,12 @@ function draw() {
     ctx.beginPath(); ctx.arc(s.x, s.y, R * 0.6, 0, Math.PI * 2); ctx.stroke();
   }
 
-  // province money labels
+  // province money labels (only your own — enemy treasuries are hidden)
   if (R > 18) {
     ctx.font = `bold ${Math.round(R * 0.42)}px system-ui`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (const p of state.provinces) {
+      if (p.money == null) continue; // foggy economy: not your province
       const w = hexToWorld(p.capital.q, p.capital.r); const s = worldToScreen(w.x, w.y);
       ctx.fillStyle = 'rgba(0,0,0,0.55)';
       ctx.fillText('💰' + p.money, s.x, s.y - R * 0.78);
@@ -408,6 +431,9 @@ function draw() {
       ctx.fillText('💰' + p.money, s.x, s.y - R * 0.82);
     }
   }
+
+  // spell / landing animations on top of everything
+  drawFx(R);
 }
 
 function drawTerritoryGlow(R) {
@@ -493,8 +519,22 @@ function drawContent(h, cx, cy, R) {
     drawBallista(ctx, cx, cy, R, h.fired);
   }
 
-  // unit on top
-  if (h.unit) drawUnit(ctx, h.unit, cx, cy, R);
+  // unit on top, with a team-colored base marker so ownership is always clear
+  if (h.unit) {
+    const own = color(h.owner);
+    ctx.save();
+    ctx.globalAlpha = h.unit.moved ? 0.45 : 0.9;
+    ctx.fillStyle = own;
+    ctx.beginPath(); ctx.ellipse(cx, cy + R * 0.5, R * 0.34, R * 0.13, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = Math.max(1, R * 0.03); ctx.stroke();
+    ctx.restore();
+    // enemy unit on/next to your land gets a warning ring (helps spot scouts)
+    if (h.owner !== YOU && h.owner !== null) {
+      ctx.strokeStyle = own; ctx.lineWidth = Math.max(1.5, R * 0.05);
+      ctx.beginPath(); ctx.arc(cx, cy - R * 0.05, R * 0.46, 0, Math.PI * 2); ctx.stroke();
+    }
+    drawUnit(ctx, h.unit, cx, cy, R);
+  }
 }
 
 function drawBallista(g, cx, cy, R, fired) {
@@ -547,6 +587,7 @@ function drawUnit(g, unit, cx, cy, R, ignoreMoved) {
   else if (kind === 'scout') drawScout(g, cx, cy, R);
   else if (kind === 'summoner') drawSummoner(g, cx, cy, R);
   else if (kind === 'wolf') drawWolf(g, cx, cy, R);
+  else if (kind === 'eagle') drawEagle(g, cx, cy, R);
   else drawPerson(g, cx, cy, R, kind);
   g.restore();
 
@@ -818,6 +859,58 @@ function drawWolf(g, cx, cy, R) {
   g.stroke();
 }
 
+function drawEagle(g, cx, cy, R) {
+  g.lineWidth = Math.max(1, R * 0.04);
+  g.strokeStyle = '#3a2a12';
+  // spread wings
+  g.fillStyle = '#6b4a26';
+  g.beginPath();
+  g.moveTo(cx, cy - R * 0.05);
+  g.quadraticCurveTo(cx - R * 0.5, cy - R * 0.4, cx - R * 0.6, cy - R * 0.05);
+  g.quadraticCurveTo(cx - R * 0.4, cy - R * 0.1, cx, cy + R * 0.1);
+  g.quadraticCurveTo(cx + R * 0.4, cy - R * 0.1, cx + R * 0.6, cy - R * 0.05);
+  g.quadraticCurveTo(cx + R * 0.5, cy - R * 0.4, cx, cy - R * 0.05);
+  g.closePath(); g.fill(); g.stroke();
+  // wing feather lines
+  g.strokeStyle = '#4a3418'; g.lineWidth = Math.max(1, R * 0.03);
+  for (const s of [-1, 1]) {
+    g.beginPath();
+    g.moveTo(cx + s * R * 0.18, cy - R * 0.08);
+    g.lineTo(cx + s * R * 0.42, cy - R * 0.16);
+    g.stroke();
+  }
+  // body
+  g.fillStyle = '#5a3c1e'; g.strokeStyle = '#3a2a12'; g.lineWidth = Math.max(1, R * 0.04);
+  g.beginPath(); g.ellipse(cx, cy + R * 0.16, R * 0.16, R * 0.26, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+  // white head
+  g.fillStyle = '#f3f1ea';
+  g.beginPath(); g.arc(cx, cy - R * 0.14, R * 0.15, 0, Math.PI * 2); g.fill(); g.stroke();
+  // golden beak
+  g.fillStyle = '#f0b000';
+  g.beginPath();
+  g.moveTo(cx + R * 0.12, cy - R * 0.16);
+  g.lineTo(cx + R * 0.3, cy - R * 0.1);
+  g.lineTo(cx + R * 0.12, cy - R * 0.05);
+  g.closePath(); g.fill(); g.stroke();
+  // eye
+  g.fillStyle = '#1a1a2e';
+  g.beginPath(); g.arc(cx + R * 0.04, cy - R * 0.16, R * 0.03, 0, Math.PI * 2); g.fill();
+  // tiny crown — the baron rides it
+  g.fillStyle = '#ffd84a'; g.strokeStyle = '#b89020'; g.lineWidth = Math.max(1, R * 0.03);
+  g.beginPath();
+  g.moveTo(cx - R * 0.1, cy - R * 0.26);
+  g.lineTo(cx - R * 0.1, cy - R * 0.34);
+  g.lineTo(cx - R * 0.03, cy - R * 0.28);
+  g.lineTo(cx + R * 0.04, cy - R * 0.36);
+  g.lineTo(cx + R * 0.04, cy - R * 0.26);
+  g.closePath(); g.fill(); g.stroke();
+  // talons
+  g.strokeStyle = '#f0b000'; g.lineWidth = Math.max(1.5, R * 0.05); g.lineCap = 'round';
+  for (const s of [-0.08, 0.08]) {
+    g.beginPath(); g.moveTo(cx + s * R, cy + R * 0.4); g.lineTo(cx + s * R, cy + R * 0.5); g.stroke();
+  }
+}
+
 function roundRect(x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -856,6 +949,90 @@ function hexDist(a, b) {
   return (Math.abs(a.q - b.q) + Math.abs(a.r - b.r) + Math.abs(a.q + a.r - b.q - b.r)) / 2;
 }
 
+function defeatable(level, def) { return level > def || (level === 4 && def === 4); }
+
+function canPlaceFriendly(h, spec) {
+  if (h.building && h.building !== 'farm') return false;
+  if (h.unit) {
+    const a = CAT[spec.kind] || {};
+    const b = CAT[h.unit.kind] || {};
+    if (a.special || b.special) return false;
+    return spec.level + h.unit.level <= 4;
+  }
+  return true;
+}
+
+// Mirror of server moveOptions for an existing unit hex `uh`.
+function clientMoveOptions(uh) {
+  const reach = new Set();
+  const cap = new Set();
+  const unit = uh.unit;
+  const cat = CAT[unit.kind] || {};
+
+  if (cat.landAnywhere) {
+    for (const h of state.hexes) {
+      if (h === uh) continue;
+      if (h.owner === YOU) { if (canPlaceFriendly(h, unit)) reach.add(k(h.q, h.r)); }
+      else if (defeatable(unit.level, defenseOf(h))) cap.add(k(h.q, h.r));
+    }
+    return { reach, cap };
+  }
+
+  const moveRange = cat.moveRange || 4;
+  const dist = new Map([[k(uh.q, uh.r), 0]]);
+  const queue = [uh];
+  const friendly = [uh];
+  while (queue.length) {
+    const c = queue.shift();
+    const d = dist.get(k(c.q, c.r));
+    if (d >= moveRange) continue;
+    for (const nb of neighborsOf(c)) {
+      if (nb.owner !== YOU) continue;
+      const nk = k(nb.q, nb.r);
+      if (dist.has(nk)) continue;
+      dist.set(nk, d + 1);
+      queue.push(nb); friendly.push(nb);
+      if (canPlaceFriendly(nb, unit)) reach.add(nk);
+    }
+  }
+  if (!cat.noCapture) {
+    const cr = cat.captureReach || 1;
+    for (const h of state.hexes) {
+      if (h.owner === YOU) continue;
+      if (!defeatable(unit.level, defenseOf(h))) continue;
+      for (const f of friendly) { if (hexDist(f, h) <= cr) { cap.add(k(h.q, h.r)); break; } }
+    }
+  }
+  return { reach, cap };
+}
+
+// Mirror of server buyOptions for placing a freshly bought unit of `kind`.
+function clientBuyOptions(kind) {
+  const reach = new Set();
+  const cap = new Set();
+  const cat = CAT[kind] || {};
+  const spec = { kind, level: cat.level };
+  const members = provMembers.get(k(selectedProvince.q, selectedProvince.r)) || [];
+
+  if (cat.landAnywhere) {
+    for (const h of state.hexes) {
+      if (h.owner === YOU) { if (canPlaceFriendly(h, spec)) reach.add(k(h.q, h.r)); }
+      else if (defeatable(spec.level, defenseOf(h))) cap.add(k(h.q, h.r));
+    }
+    return { reach, cap };
+  }
+  for (const m of members) if (canPlaceFriendly(m, spec)) reach.add(k(m.q, m.r));
+  if (!cat.noCapture) {
+    const cr = cat.captureReach || 1;
+    for (const h of state.hexes) {
+      if (h.owner === YOU) continue;
+      if (!defeatable(spec.level, defenseOf(h))) continue;
+      for (const m of members) { if (hexDist(m, h) <= cr) { cap.add(k(h.q, h.r)); break; } }
+    }
+  }
+  return { reach, cap };
+}
+
 function computeHighlights() {
   reachable = new Set();
   capturable = new Set();
@@ -875,32 +1052,18 @@ function computeHighlights() {
     return;
   }
 
+  // placing a freshly bought unit from the hand
+  if (hand && isUnitKind(hand.kind) && selectedProvince) {
+    const { reach, cap } = clientBuyOptions(hand.kind);
+    reachable = reach; capturable = cap;
+    return;
+  }
+
   if (!selectedUnit) return;
   const uh = hexMap.get(k(selectedUnit.q, selectedUnit.r));
   if (!uh || !uh.unit || uh.unit.moved) return;
-  const lv = uh.unit.level;
-  const isHorse = uh.unit.kind === 'horseman';
-  const range = isHorse ? 2 : 1;
-  const members = provMembers.get(uh.province) || [uh];
-  const memberSet = new Set(members.map((m) => k(m.q, m.r)));
-
-  // internal moves / merges
-  for (const m of members) {
-    if (k(m.q, m.r) === k(uh.q, uh.r)) continue;
-    if (m.unit) {
-      if (!isHorse && m.unit.kind !== 'horseman' && m.unit.level + lv <= 4) reachable.add(k(m.q, m.r));
-    } else {
-      reachable.add(k(m.q, m.r));
-    }
-  }
-  // captures: any enemy/neutral hex within `range` of the province, level > defense
-  for (const h of state.hexes) {
-    const key = k(h.q, h.r);
-    if (memberSet.has(key)) continue;
-    let near = false;
-    for (const m of members) { if (hexDist(m, h) <= range) { near = true; break; } }
-    if (near && lv > defenseOf(h)) capturable.add(key);
-  }
+  const { reach, cap } = clientMoveOptions(uh);
+  reachable = reach; capturable = cap;
 }
 
 // ===========================================================================
@@ -1097,17 +1260,30 @@ function toggleMenu(cat) {
 $('btnUnit').onclick = () => toggleMenu('unit');
 $('btnBuild').onclick = () => toggleMenu('build');
 $('btnSpell').onclick = () => toggleMenu('spell');
+$('btnUpgrade').onclick = () => toggleMenu('upgrade');
+
+function menuDefs(cat) {
+  if (cat === 'unit') return UNIT_DEFS.filter((u) => !u.summonedOnly);
+  if (cat === 'build') return BUILD_DEFS;
+  if (cat === 'spell') return SPELL_DEFS;
+  return UPGRADE_DEFS;
+}
+
+function ownedUpgrade(kind) {
+  const me = state && state.players[YOU];
+  return !!(me && me.upgrades && me.upgrades[kind]);
+}
 
 function buildMenu(cat) {
   const menu = $('popMenu');
   menu.innerHTML = '';
   const pd = provinceData();
-  const defs = cat === 'unit' ? UNIT_DEFS.filter((u) => !u.summonedOnly) : cat === 'build' ? BUILD_DEFS : SPELL_DEFS;
-  for (const def of defs) {
+  for (const def of menuDefs(cat)) {
     const cost = (cat === 'build' && def.kind === 'farm') ? farmCostOf(pd) : def.cost;
     const opt = document.createElement('div');
     opt.className = 'unit-opt';
-    const afford = pd && pd.money >= cost;
+    const purchased = cat === 'upgrade' && ownedUpgrade(def.kind);
+    const afford = pd && pd.money >= cost && !purchased;
     if (!afford) opt.setAttribute('disabled', '');
 
     const cv = document.createElement('canvas');
@@ -1121,14 +1297,19 @@ function buildMenu(cat) {
     opt.appendChild(nm);
 
     const price = document.createElement('span');
-    price.className = 'price'; price.textContent = '💰' + cost;
+    price.className = 'price'; price.textContent = purchased ? '✓ куплено' : '💰' + cost;
     opt.appendChild(price);
 
     if (afford) opt.onclick = () => {
+      if (cat === 'upgrade') {
+        net({ type: 'action', action: { type: 'buyUpgrade', province: selectedProvince, upgrade: def.kind } });
+        closeUnitMenu();
+        return;
+      }
       hand = { kind: def.kind };
       selectedUnit = null; selectedBallista = null;
       reachable.clear(); capturable.clear(); fireTargets.clear();
-      closeUnitMenu(); setHandUI(); draw();
+      closeUnitMenu(); setHandUI(); computeHighlights(); draw();
     };
     menu.appendChild(opt);
   }
@@ -1142,6 +1323,13 @@ function drawIcon(g, cx, cy, R, cat, def) {
     else if (def.kind === 'tower') drawTowerG(g, cx, cy, R, '#cfd6e0', 1);
     else if (def.kind === 'strongTower') drawTowerG(g, cx, cy, R, '#ff7043', 2);
     else if (def.kind === 'ballista') drawBallista(g, cx, cy, R, false);
+    return;
+  }
+  if (cat === 'upgrade') {
+    const emoji = { farmIncome: '🌾' }[def.kind] || '⬆️';
+    g.font = `${Math.round(R * 1.2)}px system-ui`;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(emoji, cx, cy);
     return;
   }
   // spells
@@ -1212,7 +1400,7 @@ $('btnEndGame').onclick = () => {
 
 const HAND_NAMES = {
   peasant: 'крестьянина', spearman: 'копейщика', baron: 'барона', knight: 'рыцаря',
-  horseman: 'всадника', scout: 'лазутчика', summoner: 'призывателя',
+  horseman: 'всадника', scout: 'лазутчика', summoner: 'призывателя', eagle: 'барона на орле',
   farm: 'ферму', tower: 'башню', strongTower: 'сильную башню', ballista: 'баллисту',
   thunder: 'громовой удар', meteor: 'метеор', earthquake: 'землетрясение', summon: 'призыв',
 };
@@ -1222,7 +1410,11 @@ function setHandUI() {
   $('btnSpell').classList.toggle('active', hand && isSpellKind(hand.kind));
   const el = $('hand');
   if (hand) {
-    const verb = isSpellKind(hand.kind) ? 'Примените' : hand.kind === 'summon' ? 'Призовите на соседнюю клетку:' : 'Поставьте';
+    let verb;
+    if (isSpellKind(hand.kind)) verb = 'Примените';
+    else if (hand.kind === 'summon') verb = 'Призовите на соседнюю клетку:';
+    else if (hand.kind === 'eagle') verb = 'Высадите';
+    else verb = 'Поставьте';
     el.textContent = `${verb} ${HAND_NAMES[hand.kind]} — кликните по клетке (повторно — отмена)`;
     el.classList.remove('hidden');
   } else { el.classList.add('hidden'); }
@@ -1257,9 +1449,13 @@ function renderPanel() {
 
   const canAct = isMyTurn() && !!pd;
   const money = pd ? pd.money : 0;
+  const cheapestBuild = Math.min(farmCostOf(pd), 15); // farm vs tower (15) — whichever is cheaper
   $('btnUnit').disabled = !canAct || money < 10;          // cheapest unit
-  $('btnBuild').disabled = !canAct || money < farmCostOf(pd); // cheapest build (farm)
+  $('btnBuild').disabled = !canAct || money < cheapestBuild;
   $('btnSpell').disabled = !canAct || money < 30;         // cheapest spell
+  // upgrades: enable while at least one is unbought and affordable
+  const upAvail = UPGRADE_DEFS.some((u) => !ownedUpgrade(u.kind) && money >= u.cost);
+  $('btnUpgrade').disabled = !canAct || !upAvail;
   if (!canAct) closeUnitMenu();
 
   // summoner ability button
@@ -1301,7 +1497,7 @@ function showBestiary() {
   const card = document.createElement('div');
   card.className = 'card';
   card.innerHTML = '<h2>Бестиарий</h2>';
-  const sections = [['Юниты', 'unit', UNIT_DEFS], ['Постройки', 'build', BUILD_DEFS], ['Заклинания', 'spell', SPELL_DEFS]];
+  const sections = [['Юниты', 'unit', UNIT_DEFS], ['Постройки', 'build', BUILD_DEFS], ['Заклинания', 'spell', SPELL_DEFS], ['Улучшения державы', 'upgrade', UPGRADE_DEFS]];
   for (const [title, cat, defs] of sections) {
     const h = document.createElement('h3'); h.textContent = title; card.appendChild(h);
     for (const def of defs) card.appendChild(bestiaryItem(cat, def));
@@ -1331,7 +1527,241 @@ function showOverlay(text) {
 }
 
 // ===========================================================================
+// Spell / landing animations
+// ===========================================================================
+let fxList = [];
+let fxRAF = null;
+
+const SPELL_NAMES = { thunder: 'Громовой удар', meteor: 'Метеор', earthquake: 'Землетрясение' };
+
+function handleFx(events) {
+  if (!Array.isArray(events) || !state) return;
+  const now = performance.now();
+  for (const ev of events) {
+    if (ev.kind === 'spell') {
+      const dur = ev.spell === 'earthquake' ? 1400 : 1100;
+      fxList.push({ ...ev, start: now, dur });
+      logSpell(ev);
+    } else if (ev.kind === 'land') {
+      fxList.push({ ...ev, start: now, dur: 1000 });
+      logLand(ev);
+    }
+  }
+  startFxLoop();
+}
+
+function startFxLoop() {
+  if (fxRAF) return;
+  const loop = () => {
+    const now = performance.now();
+    fxList = fxList.filter((f) => now - f.start < f.dur);
+    draw();
+    fxRAF = fxList.length ? requestAnimationFrame(loop) : null;
+  };
+  fxRAF = requestAnimationFrame(loop);
+}
+
+function fxScreen(coord) {
+  const w = hexToWorld(coord.q, coord.r);
+  return worldToScreen(w.x, w.y);
+}
+
+function drawFx(R) {
+  if (!fxList.length) return;
+  const now = performance.now();
+  for (const f of fxList) {
+    const t = Math.min(1, (now - f.start) / f.dur);
+    if (f.kind === 'spell' && f.spell === 'meteor') drawMeteorFx(f, t, R);
+    else if (f.kind === 'spell' && f.spell === 'thunder') drawThunderFx(f, t, R);
+    else if (f.kind === 'spell' && f.spell === 'earthquake') drawEarthquakeFx(f, t, R);
+    else if (f.kind === 'land') drawEagleFx(f, t, R);
+  }
+}
+
+function drawMeteorFx(f, t, R) {
+  const a = fxScreen(f.from);
+  const b = fxScreen(f.to);
+  const flyT = Math.min(1, t / 0.7);
+  // arc from caster province up and over to target
+  const x = a.x + (b.x - a.x) * flyT;
+  const baseY = a.y + (b.y - a.y) * flyT;
+  const arc = -Math.sin(flyT * Math.PI) * (R * 3 + Math.hypot(b.x - a.x, b.y - a.y) * 0.25);
+  const y = baseY + arc;
+  if (t < 0.7) {
+    // trail
+    for (let i = 0; i < 6; i++) {
+      const tt = Math.max(0, flyT - i * 0.05);
+      const tx = a.x + (b.x - a.x) * tt;
+      const ty = a.y + (b.y - a.y) * tt - Math.sin(tt * Math.PI) * (R * 3 + Math.hypot(b.x - a.x, b.y - a.y) * 0.25);
+      ctx.globalAlpha = (1 - i / 6) * 0.5;
+      ctx.fillStyle = i < 3 ? '#ffd24a' : '#e6612a';
+      ctx.beginPath(); ctx.arc(tx, ty, R * (0.34 - i * 0.04), 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    // fireball head
+    const grd = ctx.createRadialGradient(x, y, 1, x, y, R * 0.5);
+    grd.addColorStop(0, '#fff6c0'); grd.addColorStop(0.5, '#ffae28'); grd.addColorStop(1, '#c1331a');
+    ctx.fillStyle = grd;
+    ctx.beginPath(); ctx.arc(x, y, R * 0.42, 0, Math.PI * 2); ctx.fill();
+  } else {
+    // explosion at target
+    const et = (t - 0.7) / 0.3;
+    const rad = R * (0.4 + et * 1.4);
+    ctx.globalAlpha = 1 - et;
+    ctx.fillStyle = '#ffcf5a';
+    ctx.beginPath(); ctx.arc(b.x, b.y, rad, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#ff7b2a'; ctx.lineWidth = R * 0.2 * (1 - et);
+    ctx.beginPath(); ctx.arc(b.x, b.y, rad * 1.1, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawThunderFx(f, t, R) {
+  const a = fxScreen(f.from);
+  const b = fxScreen(f.to);
+  // a quick bolt that flashes a few times, drawn from caster toward target then striking down
+  const flash = Math.sin(t * Math.PI * 6) > 0;
+  if (t < 0.6 && flash) {
+    ctx.strokeStyle = '#bfe3ff'; ctx.lineWidth = Math.max(2, R * 0.12); ctx.lineCap = 'round';
+    ctx.shadowColor = '#7ec8ff'; ctx.shadowBlur = R;
+    // jagged bolt from above the target down to it
+    let x = b.x + (Math.random() - 0.5) * R * 0.3;
+    let y = b.y - R * 3.2;
+    ctx.beginPath(); ctx.moveTo(x, y);
+    const steps = 5;
+    for (let i = 1; i <= steps; i++) {
+      x = b.x + (Math.random() - 0.5) * R * 0.7 * (1 - i / steps);
+      y = b.y - R * 3.2 + (R * 3.2) * (i / steps);
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    // small origin spark near the caster
+    ctx.fillStyle = 'rgba(190,227,255,0.8)';
+    ctx.beginPath(); ctx.arc(a.x, a.y, R * 0.18, 0, Math.PI * 2); ctx.fill();
+  }
+  // stun ring on target
+  ctx.globalAlpha = 1 - t;
+  ctx.strokeStyle = '#ffe066'; ctx.lineWidth = R * 0.12;
+  ctx.beginPath(); ctx.arc(b.x, b.y, R * 0.5, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function drawEarthquakeFx(f, t, R) {
+  const b = fxScreen(f.to);
+  // expanding shock rings across the 3x3 area
+  for (let i = 0; i < 3; i++) {
+    const rt = (t - i * 0.12);
+    if (rt <= 0 || rt > 1) continue;
+    ctx.globalAlpha = (1 - rt) * 0.8;
+    ctx.strokeStyle = '#b98a4a'; ctx.lineWidth = R * 0.18 * (1 - rt);
+    ctx.beginPath(); ctx.arc(b.x, b.y, R * (0.4 + rt * 2.4), 0, Math.PI * 2); ctx.stroke();
+  }
+  // jittering dust cloud
+  ctx.globalAlpha = (1 - t) * 0.6;
+  ctx.fillStyle = '#8a6a3a';
+  for (let i = 0; i < 10; i++) {
+    const ang = (i / 10) * Math.PI * 2;
+    const rr = R * (0.6 + Math.random() * 1.6) * t;
+    const jx = b.x + Math.cos(ang) * rr + (Math.random() - 0.5) * R * 0.4;
+    const jy = b.y + Math.sin(ang) * rr + (Math.random() - 0.5) * R * 0.4;
+    ctx.beginPath(); ctx.arc(jx, jy, R * 0.16, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawEagleFx(f, t, R) {
+  const b = fxScreen(f.to);
+  // eagle swoops down from above the target
+  const y = b.y - (1 - t) * R * 6;
+  const x = b.x - (1 - t) * R * 2;
+  const sc = 1 + (1 - t) * 1.4; // bigger while high up
+  ctx.save();
+  ctx.globalAlpha = t < 0.85 ? 1 : (1 - (t - 0.85) / 0.15);
+  // motion shadow on target
+  ctx.globalAlpha *= 0.9;
+  drawEagle(ctx, x, y, R * sc);
+  ctx.restore();
+  // dust puff on impact
+  if (t > 0.8) {
+    const et = (t - 0.8) / 0.2;
+    ctx.globalAlpha = (1 - et) * 0.7;
+    ctx.fillStyle = '#cdbfa0';
+    ctx.beginPath(); ctx.arc(b.x, b.y + R * 0.4, R * (0.5 + et), 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ===========================================================================
+// Chat
+// ===========================================================================
+function playerColor(idx) {
+  return (state && state.players[idx]) ? state.players[idx].color : '#9aa3b2';
+}
+
+function addChatMessage(msg) {
+  const box = $('chatLog');
+  if (!box) return;
+  const line = document.createElement('div');
+  line.className = 'chat-line' + (msg.system ? ' system' : '');
+  if (msg.system) {
+    line.innerHTML = msg.html || escapeHtml(msg.text || '');
+  } else {
+    const col = msg.color || playerColor(msg.index);
+    line.innerHTML = `<b style="color:${col}">${escapeHtml(msg.name || '?')}:</b> ${escapeHtml(msg.text || '')}`;
+  }
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+  // briefly flag unread if collapsed
+  if ($('chat').classList.contains('collapsed')) {
+    $('chatToggle').classList.add('unread');
+  }
+}
+
+function systemChat(html) { addChatMessage({ system: true, html }); }
+
+function logSpell(ev) {
+  const who = state.players[ev.by];
+  const col = who ? who.color : '#9aa3b2';
+  const nm = who ? escapeHtml(who.name) : '?';
+  systemChat(`☄ <b style="color:${col}">${nm}</b> применил <b>${SPELL_NAMES[ev.spell] || ev.spell}</b>`);
+  toast(`${who ? who.name : '?'}: ${SPELL_NAMES[ev.spell] || ev.spell}`);
+}
+
+function logLand(ev) {
+  const who = state.players[ev.by];
+  const col = who ? who.color : '#9aa3b2';
+  const nm = who ? escapeHtml(who.name) : '?';
+  systemChat(`🦅 <b style="color:${col}">${nm}</b> высадил барона на орле`);
+}
+
+function sendChat() {
+  const inp = $('chatInput');
+  const text = (inp.value || '').trim().slice(0, 240);
+  if (!text) return;
+  net({ type: 'chat', text });
+  inp.value = '';
+}
+
+function setupChat() {
+  $('chatToggle').onclick = () => {
+    const c = $('chat');
+    c.classList.toggle('collapsed');
+    if (!c.classList.contains('collapsed')) {
+      $('chatToggle').classList.remove('unread');
+      $('chatInput').focus();
+    }
+  };
+  $('chatSend').onclick = sendChat;
+  $('chatInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); sendChat(); }
+    e.stopPropagation();
+  });
+}
+
+// ===========================================================================
 // Boot
 // ===========================================================================
+setupChat();
 resize();
 connect();

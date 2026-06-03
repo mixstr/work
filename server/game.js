@@ -12,16 +12,30 @@ const DIRS = [
 const UPKEEP = { 1: 2, 2: 6, 3: 18, 4: 54 };
 
 // Unit catalog: combat level, purchase cost, per-turn upkeep, special flags.
+// moveRange  = how many friendly tiles the unit may walk through in a turn.
+// captureReach = how far from a reachable friendly tile it can grab enemy land.
+// landAnywhere = ignores reach entirely (flying raider).
+// noCapture  = may reposition but can never take territory (saboteur).
 const UNIT_CATALOG = {
-  peasant: { level: 1, cost: 10, upkeep: 2 },
-  spearman: { level: 2, cost: 20, upkeep: 6 },
-  baron: { level: 3, cost: 30, upkeep: 18 },
-  knight: { level: 4, cost: 40, upkeep: 54 },
-  horseman: { level: 2, cost: 25, upkeep: 10, range: 2, special: true },
-  scout: { level: 1, cost: 15, upkeep: 4, stealth: true, special: true },
-  summoner: { level: 2, cost: 35, upkeep: 12, special: true },
-  wolf: { level: 1, cost: 0, upkeep: 0, special: true, summonOnly: true },
+  peasant: { level: 1, cost: 10, upkeep: 2, moveRange: 4, captureReach: 1 },
+  spearman: { level: 2, cost: 20, upkeep: 6, moveRange: 4, captureReach: 1 },
+  baron: { level: 3, cost: 30, upkeep: 18, moveRange: 4, captureReach: 1 },
+  knight: { level: 4, cost: 40, upkeep: 54, moveRange: 4, captureReach: 1 },
+  horseman: { level: 2, cost: 25, upkeep: 10, moveRange: 6, captureReach: 2, special: true },
+  scout: { level: 1, cost: 15, upkeep: 4, stealth: true, special: true, moveRange: 4, noCapture: true },
+  summoner: { level: 2, cost: 35, upkeep: 12, special: true, moveRange: 4, captureReach: 1 },
+  wolf: { level: 1, cost: 0, upkeep: 0, special: true, summonOnly: true, moveRange: 4, captureReach: 1 },
+  eagle: { level: 4, cost: 120, upkeep: 18, special: true, landAnywhere: true, moveRange: 99, captureReach: 99 },
 };
+
+// One-time state upgrades, purchased once per player from a province treasury.
+const UPGRADES = {
+  farmIncome: { cost: 200 },
+};
+
+const FARM_INCOME = 4;
+const FARM_INCOME_UPGRADED = 8;
+const BASE_MOVE = 4;
 
 // Spell costs (paid from the casting province).
 const SPELL = {
@@ -31,7 +45,7 @@ const SPELL = {
 };
 
 const BALLISTA_COST = 80;
-const BALLISTA_UPKEEP = 60;
+const BALLISTA_UPKEEP = 45;
 const BALLISTA_RANGE = 2;
 const BALLISTA_LEVEL = 3;
 
@@ -75,7 +89,9 @@ class Game {
   constructor(players, opts = {}) {
     this.players = players.map((p, i) => ({
       index: i, name: p.name, color: p.color, alive: true,
+      upgrades: { farmIncome: false },
     }));
+    this.lastEvents = []; // transient fx (spells, eagle landings) for clients
     this.hexes = new Map();
     this.current = 0;
     this.status = 'playing';
@@ -153,9 +169,14 @@ class Game {
       h.owner = i;
       h.building = 'castle';
       h.money = STARTING_MONEY;
-      h.unit = { level: 1, kind: 'peasant', moved: false };
       const nbs = this.neighbors(h).filter((n) => n.owner === null);
-      if (nbs.length) nbs[Math.floor(Math.random() * nbs.length)].owner = i;
+      // units can't stand on a castle, so the starting peasant goes on an owned neighbour
+      if (nbs.length) {
+        const spot = nbs[Math.floor(Math.random() * nbs.length)];
+        spot.owner = i;
+        spot.tree = false;
+        spot.unit = { level: 1, kind: 'peasant', moved: false };
+      }
     });
 
     for (const h of this.hexes.values()) {
@@ -281,11 +302,143 @@ class Game {
     return d;
   }
 
+  // A unit defeats a hex if its level strictly exceeds the defense — with one
+  // exception: a level-4 unit (knight / eagle) can break an equal level-4
+  // defense, so a knight is able to kill another knight.
+  defeatable(level, def) {
+    return level > def || (level === 4 && def === 4);
+  }
+
+  // Can a friendly unit `spec` occupy this owned hex (move/merge target)?
+  canPlaceFriendly(h, spec) {
+    if (h.building && h.building !== 'farm') return false; // only farms are walkable
+    if (h.unit) {
+      const a = UNIT_CATALOG[spec.kind] || {};
+      const b = UNIT_CATALOG[h.unit.kind] || {};
+      if (a.special || b.special) return false;
+      return spec.level + h.unit.level <= 4;
+    }
+    return true;
+  }
+
+  // Reachable friendly tiles + capturable enemy tiles for an existing unit.
+  moveOptions(from) {
+    const unit = from.unit;
+    const player = from.owner;
+    const cat = UNIT_CATALOG[unit.kind] || {};
+    const reachable = new Set();
+    const capturable = new Set();
+
+    if (cat.landAnywhere) {
+      for (const h of this.hexes.values()) {
+        if (h === from) continue;
+        if (h.owner === player) {
+          if (this.canPlaceFriendly(h, unit)) reachable.add(key(h.q, h.r));
+        } else if (this.defeatable(unit.level, this.defenseOf(h))) {
+          capturable.add(key(h.q, h.r));
+        }
+      }
+      return { reachable, capturable };
+    }
+
+    // BFS over own connected tiles, limited by moveRange steps
+    const moveRange = cat.moveRange || BASE_MOVE;
+    const dist = new Map([[key(from.q, from.r), 0]]);
+    const queue = [from];
+    const friendlyReach = [from];
+    while (queue.length) {
+      const c = queue.shift();
+      const d = dist.get(key(c.q, c.r));
+      if (d >= moveRange) continue;
+      for (const nb of this.neighbors(c)) {
+        if (nb.owner !== player) continue;
+        const nk = key(nb.q, nb.r);
+        if (dist.has(nk)) continue;
+        dist.set(nk, d + 1);
+        queue.push(nb);
+        friendlyReach.push(nb);
+        if (this.canPlaceFriendly(nb, unit)) reachable.add(nk);
+      }
+    }
+
+    if (!cat.noCapture) {
+      const reach = cat.captureReach || 1;
+      for (const h of this.hexes.values()) {
+        if (h.owner === player) continue;
+        if (!this.defeatable(unit.level, this.defenseOf(h))) continue;
+        for (const f of friendlyReach) {
+          if (hexDistance(f, h) <= reach) { capturable.add(key(h.q, h.r)); break; }
+        }
+      }
+    }
+    return { reachable, capturable };
+  }
+
+  // Placement options for a freshly bought unit of a given kind.
+  buyOptions(prov, kind) {
+    const cat = UNIT_CATALOG[kind] || {};
+    const spec = { level: cat.level, kind };
+    const player = prov.capital.owner;
+    const reachable = new Set();
+    const capturable = new Set();
+
+    if (cat.landAnywhere) {
+      for (const h of this.hexes.values()) {
+        if (h.owner === player) {
+          if (this.canPlaceFriendly(h, spec)) reachable.add(key(h.q, h.r));
+        } else if (this.defeatable(spec.level, this.defenseOf(h))) {
+          capturable.add(key(h.q, h.r));
+        }
+      }
+      return { reachable, capturable };
+    }
+
+    for (const m of prov.members) {
+      if (this.canPlaceFriendly(m, spec)) reachable.add(key(m.q, m.r));
+    }
+    if (!cat.noCapture) {
+      const reach = cat.captureReach || 1;
+      for (const h of this.hexes.values()) {
+        if (h.owner === player) continue;
+        if (!this.defeatable(spec.level, this.defenseOf(h))) continue;
+        for (const m of prov.members) {
+          if (hexDistance(m, h) <= reach) { capturable.add(key(h.q, h.r)); break; }
+        }
+      }
+    }
+    return { reachable, capturable };
+  }
+
   // ---- turn flow -----------------------------------------------------------
 
   playerHasHexes(idx) {
     for (const h of this.hexes.values()) if (h.owner === idx) return true;
     return false;
+  }
+
+  // A player is in the game only while they hold a capital (i.e. a province of
+  // 2+ tiles). Down to scattered lone hexes with no capital ⇒ eliminated.
+  ownsCapital(idx) {
+    for (const h of this.hexes.values()) {
+      if (h.owner === idx && h.building === 'castle') return true;
+    }
+    return false;
+  }
+
+  // Strip an eliminated player's leftover lone tiles back to neutral.
+  neutralizePlayer(idx) {
+    for (const h of this.hexes.values()) {
+      if (h.owner !== idx) continue;
+      h.owner = null; h.unit = null; h.building = null;
+      h.fired = false; h.money = 0; h.gravestone = false;
+    }
+  }
+
+  refreshAlive() {
+    for (const p of this.players) {
+      if (!p.alive) continue;
+      if (!this.ownsCapital(p.index)) { p.alive = false; this.neutralizePlayer(p.index); }
+    }
   }
 
   beginTurn() {
@@ -315,7 +468,8 @@ class Game {
         if (h.building && BUILDING_UPKEEP[h.building]) upkeep += BUILDING_UPKEEP[h.building];
         if (h.unit) upkeep += unitUpkeep(h.unit);
       }
-      income += farms * 4 - upkeep;
+      const farmValue = this.players[me] && this.players[me].upgrades.farmIncome ? FARM_INCOME_UPGRADED : FARM_INCOME;
+      income += farms * farmValue - upkeep;
       prov.capital.money += income;
       if (prov.capital.money < 0) {
         prov.capital.money = 0;
@@ -369,7 +523,8 @@ class Game {
   }
 
   advanceTurn() {
-    for (const p of this.players) p.alive = this.playerHasHexes(p.index);
+    this.recomputeProvinces();
+    this.refreshAlive();
     const aliveCount = this.players.filter((p) => p.alive).length;
     if (aliveCount <= 1) {
       this.status = 'finished';
@@ -381,7 +536,8 @@ class Game {
     if (next <= this.current) this.turnCount += 1;
     this.current = next;
     this.beginTurn();
-    const stillAlive = this.players.filter((p) => this.playerHasHexes(p.index));
+    this.refreshAlive();
+    const stillAlive = this.players.filter((p) => p.alive);
     if (stillAlive.length <= 1) {
       this.status = 'finished';
       this.winner = stillAlive[0] || null;
@@ -399,16 +555,20 @@ class Game {
         tree: h.tree, gravestone: h.gravestone, money: h.money, fired: h.fired,
       };
     }
-    return m;
+    return { hexes: m, upgrades: this.players.map((p) => ({ ...p.upgrades })) };
   }
 
-  restore(m) {
+  restore(snap) {
+    const m = snap.hexes;
     for (const [kk, h] of this.hexes) {
       const s = m[kk];
       if (!s) continue;
       h.owner = s.owner; h.building = s.building;
       h.unit = s.unit ? { ...s.unit } : null;
       h.tree = s.tree; h.gravestone = s.gravestone; h.money = s.money; h.fired = s.fired;
+    }
+    if (snap.upgrades) {
+      snap.upgrades.forEach((u, i) => { if (this.players[i]) this.players[i].upgrades = { ...u }; });
     }
   }
 
@@ -418,6 +578,7 @@ class Game {
 
   applyAction(playerIndex, action) {
     this.lastError = null;
+    this.lastEvents = [];
     if (this.status !== 'playing') return this.fail('Игра завершена');
     if (playerIndex !== this.current) return this.fail('Сейчас не ваш ход');
     if (!action || typeof action.type !== 'string') return this.fail('Некорректное действие');
@@ -426,7 +587,7 @@ class Game {
     if (action.type === 'undo') return this.actUndo();
 
     const reversible = ['moveUnit', 'buyUnit', 'buildFarm', 'buildTower', 'buildStrongTower',
-      'buildBallista', 'fireBallista', 'summon', 'castSpell'];
+      'buildBallista', 'fireBallista', 'summon', 'castSpell', 'buyUpgrade'];
     if (!reversible.includes(action.type)) return this.fail('Неизвестное действие');
 
     const snap = this.snapshot();
@@ -441,6 +602,7 @@ class Game {
       case 'fireBallista': ok = this.actFireBallista(playerIndex, action); break;
       case 'summon': ok = this.actSummon(playerIndex, action); break;
       case 'castSpell': ok = this.actCastSpell(playerIndex, action); break;
+      case 'buyUpgrade': ok = this.actBuyUpgrade(playerIndex, action); break;
     }
     if (ok) this.undoStack.push(snap);
     return ok;
@@ -460,15 +622,11 @@ class Game {
   addMoney(prov, amount) { if (prov.capital) prov.capital.money += amount; }
 
   placeUnit(player, prov, from, to, spec, fresh) {
-    const inProvince = prov.members.includes(to);
     const cat = UNIT_CATALOG[spec.kind] || {};
-    const range = cat.range || 1;
-    if (!inProvince) {
-      const dist = Math.min(...prov.members.map((m) => hexDistance(m, to)));
-      if (dist > range) return this.fail('Слишком далеко');
-    }
 
-    if (inProvince) {
+    if (to.owner === player) {
+      // friendly tile: merge or reposition
+      if (to.building && to.building !== 'farm') return this.fail('Юнита нельзя ставить на здание');
       if (to.unit) {
         const specSpecial = cat.special;
         const targetSpecial = UNIT_CATALOG[to.unit.kind] && UNIT_CATALOG[to.unit.kind].special;
@@ -477,18 +635,21 @@ class Game {
         if (combined > 4) return this.fail('Юниты не объединяются (макс. уровень 4)');
         const mergedMoved = (from ? from.unit.moved : false) || to.unit.moved;
         to.unit = { level: combined, kind: deriveKind(combined), moved: mergedMoved };
+        to.gravestone = false;
         if (from) from.unit = null;
         return true;
       }
       const movedFlag = fresh ? false : true;
       if (to.tree) { to.tree = false; this.addMoney(prov, 3); }
+      to.gravestone = false;
       to.unit = { level: spec.level, kind: spec.kind, moved: movedFlag };
       if (from) from.unit = null;
       return true;
     }
 
+    // enemy / neutral tile: capture
     const def = this.defenseOf(to);
-    if (spec.level <= def) return this.fail('Клетка слишком хорошо защищена');
+    if (!this.defeatable(spec.level, def)) return this.fail('Клетка слишком хорошо защищена');
     if (to.tree) this.addMoney(prov, 3);
     to.owner = player;
     to.tree = false; to.gravestone = false; to.building = null; to.fired = false;
@@ -505,8 +666,18 @@ class Game {
     if (from.owner !== player || !from.unit) return this.fail('Здесь нет вашего юнита');
     if (from.unit.moved) return this.fail('Этот юнит уже ходил');
     if (from === to) return this.fail('Юнит уже здесь');
+
+    const { reachable, capturable } = this.moveOptions(from);
+    const tk = key(to.q, to.r);
+    if (!reachable.has(tk) && !capturable.has(tk)) return this.fail('Туда нельзя пойти');
+
+    const kind = from.unit.kind;
     const prov = this.provinceOf(from);
-    return this.placeUnit(player, prov, from, to, from.unit, false);
+    const ok = this.placeUnit(player, prov, from, to, from.unit, false);
+    if (ok && kind === 'eagle' && capturable.has(tk)) {
+      this.lastEvents.push({ kind: 'land', unit: 'eagle', to: { q: to.q, r: to.r }, by: player });
+    }
+    return ok;
   }
 
   actBuyUnit(player, action) {
@@ -524,22 +695,16 @@ class Game {
     const prov = this.provinceOf(cap);
     if (cap.money < cost) return this.fail('Недостаточно монет');
 
-    const inProvince = prov.members.includes(to);
-    if (!inProvince) {
-      const range = cat.range || 1;
-      const dist = Math.min(...prov.members.map((m) => hexDistance(m, to)));
-      if (dist > range) return this.fail('Слишком далеко от провинции');
-      if (spec.level <= this.defenseOf(to)) return this.fail('Клетка слишком хорошо защищена');
-    } else if (to.unit) {
-      if (cat.special || (UNIT_CATALOG[to.unit.kind] && UNIT_CATALOG[to.unit.kind].special)) {
-        return this.fail('Этот юнит не объединяется');
-      }
-      if (spec.level + to.unit.level > 4) return this.fail('Юниты не объединяются (макс. уровень 4)');
-    }
+    const { reachable, capturable } = this.buyOptions(prov, action.kind);
+    const tk = key(to.q, to.r);
+    if (!reachable.has(tk) && !capturable.has(tk)) return this.fail('Сюда нельзя поставить юнита');
 
     cap.money -= cost;
     const ok = this.placeUnit(player, prov, null, to, spec, true);
-    if (!ok) cap.money += cost;
+    if (!ok) { cap.money += cost; return ok; }
+    if (action.kind === 'eagle') {
+      this.lastEvents.push({ kind: 'land', unit: 'eagle', to: { q: to.q, r: to.r }, by: player });
+    }
     return ok;
   }
 
@@ -603,8 +768,10 @@ class Game {
     if (!to || to.owner !== player) return this.fail('Призыв только на свою клетку');
     if (hexDistance(from, to) !== 1) return this.fail('Только на соседнюю клетку');
     if (to.unit) return this.fail('Клетка занята');
+    if (to.building && to.building !== 'farm') return this.fail('Здесь нельзя призвать');
     if (to.tree) return this.fail('Сначала уберите дерево');
     to.unit = { level: 1, kind: 'wolf', moved: true, ttl: 3 };
+    to.gravestone = false;
     from.unit.summoned = true;
     return true;
   }
@@ -642,7 +809,26 @@ class Game {
     }
 
     cap.money -= spell.cost;
+    this.lastEvents.push({
+      kind: 'spell', spell: action.spell,
+      from: { q: cap.q, r: cap.r }, to: { q: to.q, r: to.r }, by: player,
+    });
     this.recomputeProvinces();
+    return true;
+  }
+
+  actBuyUpgrade(player, action) {
+    const cap = this.resolveHex(action.province);
+    if (!cap || cap.owner !== player || cap.building !== 'castle') {
+      return this.fail('Не выбрана столица провинции');
+    }
+    const up = UPGRADES[action.upgrade];
+    if (!up) return this.fail('Неизвестное улучшение');
+    const pl = this.players[player];
+    if (pl.upgrades[action.upgrade]) return this.fail('Улучшение уже куплено');
+    if (cap.money < up.cost) return this.fail('Недостаточно монет');
+    cap.money -= up.cost;
+    pl.upgrades[action.upgrade] = true;
     return true;
   }
 
@@ -664,12 +850,16 @@ class Game {
         if (h.unit) upkeep += unitUpkeep(h.unit);
         provByHex.set(key(h.q, h.r), key(prov.capital.q, prov.capital.r));
       }
-      income += farms * 4 - upkeep;
+      const owner = prov.capital.owner;
+      const farmValue = this.players[owner] && this.players[owner].upgrades.farmIncome ? FARM_INCOME_UPGRADED : FARM_INCOME;
+      income += farms * farmValue - upkeep;
+      // hide other players' treasury / income (fog over the economy)
+      const mine = forPlayer == null || owner === forPlayer;
       provInfo.push({
         capital: { q: prov.capital.q, r: prov.capital.r },
-        owner: prov.capital.owner,
-        money: prov.capital.money,
-        income,
+        owner,
+        money: mine ? prov.capital.money : null,
+        income: mine ? income : null,
         size: prov.members.length,
       });
     }
@@ -701,6 +891,7 @@ class Game {
       provinces: provInfo,
       players: this.players.map((p) => ({
         index: p.index, name: p.name, color: p.color, alive: p.alive,
+        upgrades: { ...p.upgrades },
       })),
       current: this.current,
       status: this.status,

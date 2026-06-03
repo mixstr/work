@@ -96,6 +96,7 @@ function createRoom(opts) {
     turnTimerHandle: null,
     turnKey: null,
     turnDeadline: null,
+    chatLog: [],
     opts: {
       width: clamp(opts.width || 14, 6, 24),
       height: clamp(opts.height || 11, 6, 20),
@@ -136,6 +137,15 @@ function broadcastState(room) {
   for (const s of room.seats) {
     send(s.ws, { type: 'state', you: s.index, game: room.game.serialize(s.index), turnDeadline: room.turnDeadline });
   }
+}
+
+function broadcastFx(room, events) {
+  if (!events || !events.length) return;
+  for (const s of room.seats) send(s.ws, { type: 'fx', events });
+}
+
+function sendChatHistory(ws, room) {
+  for (const m of room.chatLog) send(ws, m);
 }
 
 // ---- turn timer ----------------------------------------------------------
@@ -193,7 +203,10 @@ wss.on('connection', (ws) => {
     if (room && seat) {
       seat.ws = ws; ws.roomId = room.id;
       send(ws, lobbyPayload(room, seat));
-      if (room.game) send(ws, { type: 'state', you: seat.index, game: room.game.serialize(seat.index), turnDeadline: room.turnDeadline });
+      if (room.game) {
+        send(ws, { type: 'state', you: seat.index, game: room.game.serialize(seat.index), turnDeadline: room.turnDeadline });
+        sendChatHistory(ws, room);
+      }
       broadcastLobby(room);
     } else {
       userRoom.delete(ws.username);
@@ -227,8 +240,22 @@ function handleMessage(ws, msg) {
     case 'leave': return onLeave(ws);
     case 'endGame': return onEndGame(ws);
     case 'action': return onAction(ws, msg);
+    case 'chat': return onChat(ws, msg);
     default: return;
   }
+}
+
+function onChat(ws, msg) {
+  const room = ws.roomId ? getRoom(ws.roomId) : null;
+  if (!room) return;
+  const seat = seatByUser(room, ws.username);
+  if (!seat) return;
+  const text = String(msg.text == null ? '' : msg.text).slice(0, 240).trim();
+  if (!text) return;
+  const out = { type: 'chat', index: seat.index, name: seat.name, color: seat.color, text };
+  room.chatLog.push(out);
+  if (room.chatLog.length > 60) room.chatLog.shift();
+  for (const s of room.seats) send(s.ws, out);
 }
 
 function onCreate(ws, msg) {
@@ -266,7 +293,7 @@ function onJoin(ws, msg) {
     userRoom.set(ws.username, room.id);
     send(ws, { type: 'joined', roomId: room.id, you: seat.index });
     broadcastLobby(room);
-    if (room.game) broadcastState(room);
+    if (room.game) { broadcastState(room); sendChatHistory(ws, room); }
     return;
   }
 
@@ -335,6 +362,7 @@ function onAction(ws, msg) {
   if (!seat) return;
   const ok = room.game.applyAction(seat.index, msg.action);
   if (!ok && room.game.lastError) send(ws, { type: 'error', message: room.game.lastError });
+  if (ok) broadcastFx(room, room.game.lastEvents);
   if (room.game.status === 'finished') {
     clearTurnTimer(room);
     for (const s of room.seats) userRoom.delete(s.username);
