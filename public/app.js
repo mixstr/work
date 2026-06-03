@@ -70,7 +70,8 @@ const UNIT_DEFS = [
   { kind: 'knight', level: 4, cost: 40, name: 'Рыцарь', sub: 'ур.4 · содерж. 54', desc: 'Сильнейший. Пробивает любую защиту, неуязвим для баллисты и метеора.' },
   { kind: 'horseman', level: 2, cost: 25, name: 'Всадник', sub: 'ур.2 · содерж. 10', desc: 'Сила копейщика, дальность ×1.5 (рейды на 2 гекса). Вне своей провинции живёт 3 хода.' },
   { kind: 'scout', level: 1, cost: 15, name: 'Лазутчик', sub: 'ур.1 · содерж. 4', desc: 'Скрытность: невидим врагу, пока не подойдёт к его земле. Диверсант.' },
-  { kind: 'summoner', level: 2, cost: 35, name: 'Призыватель', sub: 'ур.2 · содерж. 12', desc: 'Раз в ход бесплатно призывает крестьянина на соседнюю свою клетку.' },
+  { kind: 'summoner', level: 2, cost: 35, name: 'Призыватель', sub: 'ур.2 · содерж. 12', desc: 'Раз в ход бесплатно призывает волка на соседнюю свою клетку. Волк живёт 2 хода, сила 1, бесплатен.' },
+  { kind: 'wolf', level: 1, cost: 0, name: 'Волк', sub: 'TTL 2 хода · бесплатно', desc: 'Призывается призывателем. Живёт 2 хода, сила уровня 1, не объединяется. Захватывает незащищённые клетки.', summonedOnly: true },
 ];
 const BUILD_DEFS = [
   { kind: 'farm', cost: 12, name: 'Ферма', sub: '+4 к доходу', desc: 'Строится рядом со столицей или другой фермой. Каждая следующая дороже на 2.' },
@@ -537,7 +538,7 @@ function drawTower(cx, cy, R, col, count) {
   }
 }
 
-// Distinct sprite per unit. `unit` = {kind, level, moved, stunned, stranded}.
+// Distinct sprite per unit. `unit` = {kind, level, moved, stunned, stranded, ttl}.
 function drawUnit(g, unit, cx, cy, R, ignoreMoved) {
   const kind = unit.kind || ['peasant', 'spearman', 'baron', 'knight'][unit.level - 1];
   g.save();
@@ -545,6 +546,7 @@ function drawUnit(g, unit, cx, cy, R, ignoreMoved) {
   if (kind === 'horseman') drawHorseman(g, cx, cy, R);
   else if (kind === 'scout') drawScout(g, cx, cy, R);
   else if (kind === 'summoner') drawSummoner(g, cx, cy, R);
+  else if (kind === 'wolf') drawWolf(g, cx, cy, R);
   else drawPerson(g, cx, cy, R, kind);
   g.restore();
 
@@ -561,6 +563,15 @@ function drawUnit(g, unit, cx, cy, R, ignoreMoved) {
     g.textAlign = 'center'; g.textBaseline = 'middle';
     const left = Math.max(0, 4 - unit.stranded);
     g.fillText('⌛' + left, cx - R * 0.4, cy - R * 0.5);
+  }
+  if (kind === 'wolf' && unit.ttl > 0) {
+    const ttlR = R * 0.19;
+    g.fillStyle = '#d04a10';
+    g.beginPath(); g.arc(cx + R * 0.42, cy - R * 0.44, ttlR, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff';
+    g.font = `bold ${Math.round(R * 0.3)}px system-ui`;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(unit.ttl, cx + R * 0.42, cy - R * 0.44);
   }
 }
 
@@ -591,14 +602,26 @@ function drawSummoner(g, cx, cy, R) {
   g.lineTo(cx + R * 0.14, cy - R * 0.06);
   g.lineTo(cx + R * 0.26, cy + R * 0.45);
   g.closePath(); g.fill(); g.stroke();
-  // hood/head
+  // robe trim (accent stripe on edges)
+  g.strokeStyle = '#5dd4d4'; g.lineWidth = Math.max(1, R * 0.04);
+  g.beginPath(); g.moveTo(cx - R * 0.26, cy + R * 0.45); g.lineTo(cx - R * 0.2, cy + R * 0.15); g.stroke();
+  g.beginPath(); g.moveTo(cx + R * 0.26, cy + R * 0.45); g.lineTo(cx + R * 0.2, cy + R * 0.15); g.stroke();
+  // head
+  g.strokeStyle = '#1b2940'; g.lineWidth = Math.max(1, R * 0.04);
   g.fillStyle = SKIN;
   g.beginPath(); g.arc(cx, cy - R * 0.2, R * 0.15, 0, Math.PI * 2); g.fill(); g.stroke();
-  // staff + glowing orb
+  // staff
   g.strokeStyle = '#7a5230'; g.lineWidth = Math.max(2, R * 0.06);
   g.beginPath(); g.moveTo(cx + R * 0.3, cy + R * 0.45); g.lineTo(cx + R * 0.3, cy - R * 0.4); g.stroke();
+  // orb glow (outer halo)
+  g.fillStyle = 'rgba(126, 224, 255, 0.28)';
+  g.beginPath(); g.arc(cx + R * 0.3, cy - R * 0.46, R * 0.22, 0, Math.PI * 2); g.fill();
+  // orb core
   g.fillStyle = '#7ee0ff';
   g.beginPath(); g.arc(cx + R * 0.3, cy - R * 0.46, R * 0.12, 0, Math.PI * 2); g.fill();
+  // orb specular shine
+  g.fillStyle = 'rgba(255,255,255,0.6)';
+  g.beginPath(); g.arc(cx + R * 0.26, cy - R * 0.5, R * 0.04, 0, Math.PI * 2); g.fill();
 }
 
 const SKIN = '#f0d0a8';
@@ -623,13 +646,23 @@ function drawPerson(g, cx, cy, R, kind) {
   g.beginPath(); g.arc(cx, cy - R * 0.18, R * 0.17, 0, Math.PI * 2); g.fill(); g.stroke();
 
   if (kind === 'peasant') {
-    // a hoe over the shoulder
+    // straw hat (brim + cone)
+    g.fillStyle = '#8a6020';
+    g.beginPath();
+    g.ellipse(cx, cy - R * 0.3, R * 0.25, R * 0.06, 0, 0, Math.PI * 2);
+    g.fill();
+    g.beginPath();
+    g.moveTo(cx - R * 0.12, cy - R * 0.3);
+    g.lineTo(cx, cy - R * 0.52);
+    g.lineTo(cx + R * 0.12, cy - R * 0.3);
+    g.closePath(); g.fill();
+    // hoe over the shoulder
     g.strokeStyle = '#7a5230'; g.lineWidth = Math.max(2, R * 0.07);
     g.beginPath(); g.moveTo(cx + R * 0.05, cy + R * 0.3); g.lineTo(cx + R * 0.3, cy - R * 0.32); g.stroke();
-    g.strokeStyle = '#9aa3b2'; g.beginPath();
+    g.strokeStyle = '#9aa3b2'; g.lineWidth = Math.max(2, R * 0.06); g.beginPath();
     g.moveTo(cx + R * 0.3, cy - R * 0.32); g.lineTo(cx + R * 0.42, cy - R * 0.3); g.stroke();
   } else if (kind === 'spearman') {
-    // a spear
+    // spear
     g.strokeStyle = '#7a5230'; g.lineWidth = Math.max(2, R * 0.06);
     g.beginPath(); g.moveTo(cx + R * 0.28, cy + R * 0.42); g.lineTo(cx + R * 0.28, cy - R * 0.48); g.stroke();
     g.fillStyle = '#cfd6e0';
@@ -638,28 +671,37 @@ function drawPerson(g, cx, cy, R, kind) {
     g.lineTo(cx + R * 0.18, cy - R * 0.42);
     g.lineTo(cx + R * 0.38, cy - R * 0.42);
     g.closePath(); g.fill();
+    // simple metal helmet
+    g.fillStyle = '#6080a0'; g.strokeStyle = '#1b2940'; g.lineWidth = Math.max(1, R * 0.04);
+    g.beginPath(); g.arc(cx, cy - R * 0.18, R * 0.2, Math.PI, 0); g.fill(); g.stroke();
+    g.fillRect(cx - R * 0.16, cy - R * 0.22, R * 0.32, R * 0.09);
+    g.strokeRect(cx - R * 0.16, cy - R * 0.22, R * 0.32, R * 0.09);
   } else if (kind === 'baron') {
-    // a sword + a crown
+    // sword + guard
     g.strokeStyle = '#dfe6f0'; g.lineWidth = Math.max(2, R * 0.07);
     g.beginPath(); g.moveTo(cx + R * 0.28, cy + R * 0.42); g.lineTo(cx + R * 0.28, cy - R * 0.34); g.stroke();
     g.strokeStyle = '#caa44a'; g.lineWidth = Math.max(2, R * 0.06);
     g.beginPath(); g.moveTo(cx + R * 0.18, cy + R * 0.18); g.lineTo(cx + R * 0.38, cy + R * 0.18); g.stroke();
-    g.fillStyle = '#ffd84a';
+    // crown
+    g.fillStyle = '#ffd84a'; g.strokeStyle = '#b89020'; g.lineWidth = Math.max(1, R * 0.04);
     g.beginPath();
     g.moveTo(cx - R * 0.17, cy - R * 0.3);
     g.lineTo(cx - R * 0.17, cy - R * 0.45);
     g.lineTo(cx - R * 0.06, cy - R * 0.34);
-    g.lineTo(cx, cy - R * 0.48);
+    g.lineTo(cx, cy - R * 0.5);
     g.lineTo(cx + R * 0.06, cy - R * 0.34);
     g.lineTo(cx + R * 0.17, cy - R * 0.45);
     g.lineTo(cx + R * 0.17, cy - R * 0.3);
     g.closePath(); g.fill(); g.stroke();
+    // gem on crown tip
+    g.fillStyle = '#e63a9b';
+    g.beginPath(); g.arc(cx, cy - R * 0.48, R * 0.05, 0, Math.PI * 2); g.fill();
   } else if (kind === 'knight') {
-    // helmet over the head + shield
-    g.fillStyle = '#b9c2d0';
+    // full helmet
+    g.fillStyle = '#b9c2d0'; g.strokeStyle = '#1b2940'; g.lineWidth = Math.max(1, R * 0.04);
     g.beginPath(); g.arc(cx, cy - R * 0.2, R * 0.2, Math.PI, 0); g.fill(); g.stroke();
     g.fillRect(cx - R * 0.2, cy - R * 0.22, R * 0.4, R * 0.12);
-    g.strokeStyle = '#1b2940'; g.strokeRect(cx - R * 0.2, cy - R * 0.22, R * 0.4, R * 0.12);
+    g.strokeRect(cx - R * 0.2, cy - R * 0.22, R * 0.4, R * 0.12);
     g.fillStyle = '#1b2940';
     g.fillRect(cx - R * 0.1, cy - R * 0.16, R * 0.2, R * 0.04); // visor slit
     // shield
@@ -671,6 +713,10 @@ function drawPerson(g, cx, cy, R, kind) {
     g.lineTo(cx - R * 0.31, cy + R * 0.34);
     g.lineTo(cx - R * 0.42, cy + R * 0.22);
     g.closePath(); g.fill(); g.stroke();
+    // white cross on shield
+    g.fillStyle = '#f0f0f4';
+    g.fillRect(cx - R * 0.34, cy + R * 0.05, R * 0.04, R * 0.22); // vertical bar
+    g.fillRect(cx - R * 0.42, cy + R * 0.12, R * 0.22, R * 0.04); // horizontal bar
   }
 }
 
@@ -693,6 +739,12 @@ function drawHorseman(g, cx, cy, R) {
   g.lineTo(cx + R * 0.62, cy - R * 0.18);
   g.lineTo(cx + R * 0.44, cy + R * 0.1);
   g.closePath(); g.fill(); g.stroke();
+  // mane (dark streak along neck)
+  g.strokeStyle = '#4a2c10'; g.lineWidth = Math.max(2, R * 0.07); g.lineCap = 'round';
+  g.beginPath();
+  g.moveTo(cx + R * 0.34, cy + R * 0.1);
+  g.quadraticCurveTo(cx + R * 0.44, cy - R * 0.06, cx + R * 0.52, cy - R * 0.2);
+  g.stroke();
   // rider
   g.fillStyle = '#5b86c4';
   g.beginPath();
@@ -706,6 +758,64 @@ function drawHorseman(g, cx, cy, R) {
   // lance
   g.strokeStyle = '#dfe6f0'; g.lineWidth = Math.max(2, R * 0.05);
   g.beginPath(); g.moveTo(cx - R * 0.1, cy - R * 0.1); g.lineTo(cx + R * 0.5, cy - R * 0.5); g.stroke();
+}
+
+function drawWolf(g, cx, cy, R) {
+  g.lineWidth = Math.max(1, R * 0.04);
+  g.strokeStyle = '#1b2940';
+  // body
+  g.fillStyle = '#8c9bae';
+  g.beginPath();
+  g.ellipse(cx - R * 0.06, cy + R * 0.14, R * 0.3, R * 0.17, 0, 0, Math.PI * 2);
+  g.fill(); g.stroke();
+  // head
+  g.fillStyle = '#a0afbe';
+  g.beginPath();
+  g.arc(cx + R * 0.2, cy - R * 0.02, R * 0.17, 0, Math.PI * 2);
+  g.fill(); g.stroke();
+  // left ear
+  g.fillStyle = '#6e7d8e';
+  g.beginPath();
+  g.moveTo(cx + R * 0.1, cy - R * 0.14);
+  g.lineTo(cx + R * 0.14, cy - R * 0.36);
+  g.lineTo(cx + R * 0.24, cy - R * 0.16);
+  g.closePath(); g.fill(); g.stroke();
+  // right ear
+  g.beginPath();
+  g.moveTo(cx + R * 0.22, cy - R * 0.16);
+  g.lineTo(cx + R * 0.29, cy - R * 0.38);
+  g.lineTo(cx + R * 0.38, cy - R * 0.16);
+  g.closePath(); g.fill(); g.stroke();
+  // snout
+  g.fillStyle = '#7d8e9c';
+  g.beginPath();
+  g.moveTo(cx + R * 0.32, cy - R * 0.08);
+  g.lineTo(cx + R * 0.46, cy - R * 0.02);
+  g.lineTo(cx + R * 0.32, cy + R * 0.04);
+  g.closePath(); g.fill(); g.stroke();
+  // nose
+  g.fillStyle = '#1a1a2e';
+  g.beginPath(); g.arc(cx + R * 0.45, cy - R * 0.02, R * 0.04, 0, Math.PI * 2); g.fill();
+  // amber eye
+  g.fillStyle = '#f0c000';
+  g.beginPath(); g.arc(cx + R * 0.26, cy - R * 0.06, R * 0.04, 0, Math.PI * 2); g.fill();
+  // pupil
+  g.fillStyle = '#1a1a2e';
+  g.beginPath(); g.arc(cx + R * 0.27, cy - R * 0.06, R * 0.02, 0, Math.PI * 2); g.fill();
+  // legs
+  g.strokeStyle = '#6e7d8e'; g.lineWidth = Math.max(2, R * 0.07); g.lineCap = 'round';
+  for (const dx of [-0.25, -0.1, 0.04, 0.17]) {
+    g.beginPath();
+    g.moveTo(cx + dx * R, cy + R * 0.28);
+    g.lineTo(cx + (dx + 0.04) * R, cy + R * 0.48);
+    g.stroke();
+  }
+  // tail curved upward
+  g.strokeStyle = '#8c9bae'; g.lineWidth = Math.max(2, R * 0.1); g.lineCap = 'round';
+  g.beginPath();
+  g.moveTo(cx - R * 0.34, cy + R * 0.1);
+  g.quadraticCurveTo(cx - R * 0.56, cy - R * 0.12, cx - R * 0.42, cy - R * 0.3);
+  g.stroke();
 }
 
 function roundRect(x, y, w, h, r) {
@@ -992,7 +1102,7 @@ function buildMenu(cat) {
   const menu = $('popMenu');
   menu.innerHTML = '';
   const pd = provinceData();
-  const defs = cat === 'unit' ? UNIT_DEFS : cat === 'build' ? BUILD_DEFS : SPELL_DEFS;
+  const defs = cat === 'unit' ? UNIT_DEFS.filter((u) => !u.summonedOnly) : cat === 'build' ? BUILD_DEFS : SPELL_DEFS;
   for (const def of defs) {
     const cost = (cat === 'build' && def.kind === 'farm') ? farmCostOf(pd) : def.cost;
     const opt = document.createElement('div');
@@ -1172,7 +1282,7 @@ function renderPanel() {
 // Bestiary
 // ===========================================================================
 function bestiaryItem(cat, def) {
-  const cost = (cat === 'build' && def.kind === 'farm') ? '12+' : def.cost;
+  const cost = def.summonedOnly ? 'призыв' : (cat === 'build' && def.kind === 'farm') ? '12+' : def.cost;
   const cv = document.createElement('canvas');
   cv.width = 80; cv.height = 80;
   drawIcon(cv.getContext('2d'), 40, 42, 34, cat, def);

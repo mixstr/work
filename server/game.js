@@ -20,6 +20,7 @@ const UNIT_CATALOG = {
   horseman: { level: 2, cost: 25, upkeep: 10, range: 2, special: true },
   scout: { level: 1, cost: 15, upkeep: 4, stealth: true, special: true },
   summoner: { level: 2, cost: 35, upkeep: 12, special: true },
+  wolf: { level: 1, cost: 0, upkeep: 0, special: true, summonOnly: true },
 };
 
 // Spell costs (paid from the casting province).
@@ -324,9 +325,17 @@ class Game {
       }
     }
 
+    // wolf TTL countdown (summoner-summoned wolves live WOLF_TTL turns then die)
+    for (const h of this.hexes.values()) {
+      if (h.owner !== me || !h.unit || h.unit.kind !== 'wolf') continue;
+      h.unit.ttl = (h.unit.ttl || 1) - 1;
+      if (h.unit.ttl <= 0) { h.unit = null; h.gravestone = true; }
+    }
+
     // stranded units: those on unfunded lone hexes die after STRANDED_LIMIT turns
     for (const h of this.hexes.values()) {
       if (h.owner !== me || !h.unit) continue;
+      if (h.unit.kind === 'wolf') continue; // wolves use their own TTL instead
       if (fundedHexes.has(key(h.q, h.r))) {
         h.unit.stranded = 0;
       } else {
@@ -509,6 +518,7 @@ class Game {
     if (!to) return this.fail('Нет такой клетки');
     const cat = UNIT_CATALOG[action.kind];
     if (!cat) return this.fail('Неизвестный юнит');
+    if (cat.summonOnly) return this.fail('Этот юнит нельзя купить');
     const spec = { level: cat.level, kind: action.kind };
     const cost = cat.cost;
     const prov = this.provinceOf(cap);
@@ -594,7 +604,7 @@ class Game {
     if (hexDistance(from, to) !== 1) return this.fail('Только на соседнюю клетку');
     if (to.unit) return this.fail('Клетка занята');
     if (to.tree) return this.fail('Сначала уберите дерево');
-    to.unit = { level: 1, kind: 'peasant', moved: true };
+    to.unit = { level: 1, kind: 'wolf', moved: true, ttl: 3 };
     from.unit.summoned = true;
     return true;
   }
@@ -678,7 +688,7 @@ class Game {
         unit: unit ? {
           level: unit.level, moved: unit.moved, kind: unit.kind,
           stunned: !!unit.stunned, stranded: unit.stranded || 0,
-          summoned: !!unit.summoned,
+          summoned: !!unit.summoned, ttl: unit.ttl || 0,
         } : null,
         tree: h.tree, gravestone: h.gravestone, fired: !!h.fired,
         capital: h.building === 'castle',
