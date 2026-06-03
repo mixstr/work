@@ -64,15 +64,35 @@ let fireTargets = new Set();
 let turnDeadline = null;
 
 const UNIT_DEFS = [
-  { kind: 'peasant', level: 1, cost: 10, name: 'Крестьянин' },
-  { kind: 'spearman', level: 2, cost: 20, name: 'Копейщик' },
-  { kind: 'baron', level: 3, cost: 30, name: 'Барон' },
-  { kind: 'knight', level: 4, cost: 40, name: 'Рыцарь' },
-  { kind: 'horseman', level: 2, cost: 25, name: 'Всадник' },
+  { kind: 'peasant', level: 1, cost: 10, name: 'Крестьянин', sub: 'ур.1 · содерж. 2', desc: 'Базовый юнит. Захватывает незащищённые клетки, рубит деревья.' },
+  { kind: 'spearman', level: 2, cost: 20, name: 'Копейщик', sub: 'ур.2 · содерж. 6', desc: 'Бьёт защиту 1 уровня. Получается из двух крестьян.' },
+  { kind: 'baron', level: 3, cost: 30, name: 'Барон', sub: 'ур.3 · содерж. 18', desc: 'Бьёт защиту 2 уровня. Дорогое содержание.' },
+  { kind: 'knight', level: 4, cost: 40, name: 'Рыцарь', sub: 'ур.4 · содерж. 54', desc: 'Сильнейший. Пробивает любую защиту, неуязвим для баллисты и метеора.' },
+  { kind: 'horseman', level: 2, cost: 25, name: 'Всадник', sub: 'ур.2 · содерж. 10', desc: 'Сила копейщика, дальность ×1.5 (рейды на 2 гекса). Вне своей провинции живёт 3 хода.' },
+  { kind: 'scout', level: 1, cost: 15, name: 'Лазутчик', sub: 'ур.1 · содерж. 4', desc: 'Скрытность: невидим врагу, пока не подойдёт к его земле. Диверсант.' },
+  { kind: 'summoner', level: 2, cost: 35, name: 'Призыватель', sub: 'ур.2 · содерж. 12', desc: 'Раз в ход бесплатно призывает крестьянина на соседнюю свою клетку.' },
+];
+const BUILD_DEFS = [
+  { kind: 'farm', cost: 12, name: 'Ферма', sub: '+4 к доходу', desc: 'Строится рядом со столицей или другой фермой. Каждая следующая дороже на 2.' },
+  { kind: 'tower', cost: 15, name: 'Башня', sub: 'защита 2', desc: 'Защищает себя и соседние клетки на уровень 2.' },
+  { kind: 'strongTower', cost: 35, name: 'Сильная башня', sub: 'защита 3', desc: 'Защита 3 уровня — пробивает только рыцарь.' },
+  { kind: 'ballista', cost: 80, name: 'Баллиста', sub: 'защита 3 · содерж. 60', desc: 'Не двигается. Раз в ход бьёт по вражескому юниту в радиусе 2 (до ур.3). Ломается рыцарём.' },
+];
+const SPELL_DEFS = [
+  { kind: 'thunder', cost: 30, name: 'Громовой удар', sub: 'оглушение', desc: 'Оглушает вражеского юнита — он пропускает свой следующий ход.' },
+  { kind: 'meteor', cost: 60, name: 'Метеор', sub: 'урон по клетке', desc: 'Бьёт в любую клетку: уничтожает юнита (до ур.3) или постройку. Не захватывает клетку.' },
+  { kind: 'earthquake', cost: 180, name: 'Землетрясение', sub: 'área 3×3', desc: 'Ломает все укрепления (башни, сильные башни, баллисты) в области 3×3.' },
 ];
 const UNIT_KINDS = UNIT_DEFS.map((u) => u.kind);
+const BUILD_KINDS = BUILD_DEFS.map((b) => b.kind);
+const SPELL_KINDS = SPELL_DEFS.map((s) => s.kind);
 const isUnitKind = (kind) => UNIT_KINDS.includes(kind);
+const isBuildKind = (kind) => BUILD_KINDS.includes(kind);
+const isSpellKind = (kind) => SPELL_KINDS.includes(kind);
 function unitDef(kind) { return UNIT_DEFS.find((u) => u.kind === kind); }
+function defByKind(kind) {
+  return UNIT_DEFS.concat(BUILD_DEFS, SPELL_DEFS).find((d) => d.kind === kind);
+}
 
 const cam = { x: 0, y: 0, scale: 1, ready: false };
 
@@ -517,14 +537,68 @@ function drawTower(cx, cy, R, col, count) {
   }
 }
 
-// Distinct sprite per unit. `unit` = {kind, level, moved}.
+// Distinct sprite per unit. `unit` = {kind, level, moved, stunned, stranded}.
 function drawUnit(g, unit, cx, cy, R, ignoreMoved) {
   const kind = unit.kind || ['peasant', 'spearman', 'baron', 'knight'][unit.level - 1];
   g.save();
   g.globalAlpha = (!ignoreMoved && unit.moved) ? 0.5 : 1;
   if (kind === 'horseman') drawHorseman(g, cx, cy, R);
+  else if (kind === 'scout') drawScout(g, cx, cy, R);
+  else if (kind === 'summoner') drawSummoner(g, cx, cy, R);
   else drawPerson(g, cx, cy, R, kind);
   g.restore();
+
+  // status indicators
+  if (unit.stunned) {
+    g.fillStyle = '#ffe066';
+    g.font = `bold ${Math.round(R * 0.6)}px system-ui`;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('⚡', cx + R * 0.45, cy - R * 0.45);
+  }
+  if (unit.stranded > 0) {
+    g.fillStyle = '#ff6b6b';
+    g.font = `bold ${Math.round(R * 0.42)}px system-ui`;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    const left = Math.max(0, 4 - unit.stranded);
+    g.fillText('⌛' + left, cx - R * 0.4, cy - R * 0.5);
+  }
+}
+
+function drawScout(g, cx, cy, R) {
+  g.lineWidth = Math.max(1, R * 0.04); g.strokeStyle = '#0d1422';
+  // dark hooded cloak
+  g.fillStyle = '#3a4a5e';
+  g.beginPath();
+  g.moveTo(cx, cy - R * 0.5);
+  g.lineTo(cx + R * 0.3, cy + R * 0.42);
+  g.lineTo(cx - R * 0.3, cy + R * 0.42);
+  g.closePath(); g.fill(); g.stroke();
+  // shadowed face
+  g.fillStyle = '#11161f';
+  g.beginPath(); g.arc(cx, cy - R * 0.12, R * 0.13, 0, Math.PI * 2); g.fill();
+  // dagger
+  g.strokeStyle = '#cfd6e0'; g.lineWidth = Math.max(1.5, R * 0.06);
+  g.beginPath(); g.moveTo(cx + R * 0.18, cy + R * 0.3); g.lineTo(cx + R * 0.34, cy + R * 0.02); g.stroke();
+}
+
+function drawSummoner(g, cx, cy, R) {
+  g.lineWidth = Math.max(1, R * 0.04); g.strokeStyle = '#1b2940';
+  // long robe
+  g.fillStyle = '#2e8b8b';
+  g.beginPath();
+  g.moveTo(cx - R * 0.26, cy + R * 0.45);
+  g.lineTo(cx - R * 0.14, cy - R * 0.06);
+  g.lineTo(cx + R * 0.14, cy - R * 0.06);
+  g.lineTo(cx + R * 0.26, cy + R * 0.45);
+  g.closePath(); g.fill(); g.stroke();
+  // hood/head
+  g.fillStyle = SKIN;
+  g.beginPath(); g.arc(cx, cy - R * 0.2, R * 0.15, 0, Math.PI * 2); g.fill(); g.stroke();
+  // staff + glowing orb
+  g.strokeStyle = '#7a5230'; g.lineWidth = Math.max(2, R * 0.06);
+  g.beginPath(); g.moveTo(cx + R * 0.3, cy + R * 0.45); g.lineTo(cx + R * 0.3, cy - R * 0.4); g.stroke();
+  g.fillStyle = '#7ee0ff';
+  g.beginPath(); g.arc(cx + R * 0.3, cy - R * 0.46, R * 0.12, 0, Math.PI * 2); g.fill();
 }
 
 const SKIN = '#f0d0a8';
@@ -793,8 +867,13 @@ function handleClick(sx, sy) {
   const h = hexMap.get(k(c.q, c.r));
   if (!h) { clearSelection(); return; }
 
-  // Buy/build placement mode
+  // Placement / cast mode
   if (hand && isMyTurn()) {
+    if (hand.kind === 'summon') {
+      net({ type: 'action', action: { type: 'summon', from: hand.from, to: { q: h.q, r: h.r } } });
+      hand = null; setHandUI();
+      return;
+    }
     if (!selectedProvince) { toast('Сначала выберите свою провинцию'); return; }
     placeFromHand(h);
     return;
@@ -870,20 +949,17 @@ function clearSelection() {
   closeUnitMenu(); setHandUI(); renderPanel(); draw();
 }
 
+const BUILD_ACTION = { farm: 'buildFarm', tower: 'buildTower', strongTower: 'buildStrongTower', ballista: 'buildBallista' };
+
 function placeFromHand(h) {
   const prov = selectedProvince;
   const to = { q: h.q, r: h.r };
   if (isUnitKind(hand.kind)) {
-    const def = unitDef(hand.kind);
-    net({ type: 'action', action: { type: 'buyUnit', province: prov, to, kind: hand.kind, level: def.level } });
-  } else if (hand.kind === 'farm') {
-    net({ type: 'action', action: { type: 'buildFarm', province: prov, to } });
-  } else if (hand.kind === 'tower') {
-    net({ type: 'action', action: { type: 'buildTower', province: prov, to } });
-  } else if (hand.kind === 'strongTower') {
-    net({ type: 'action', action: { type: 'buildStrongTower', province: prov, to } });
-  } else if (hand.kind === 'ballista') {
-    net({ type: 'action', action: { type: 'buildBallista', province: prov, to } });
+    net({ type: 'action', action: { type: 'buyUnit', province: prov, to, kind: hand.kind } });
+  } else if (isBuildKind(hand.kind)) {
+    net({ type: 'action', action: { type: BUILD_ACTION[hand.kind], province: prov, to } });
+  } else if (isSpellKind(hand.kind)) {
+    net({ type: 'action', action: { type: 'castSpell', province: prov, spell: hand.kind, to } });
   }
   hand = null; setHandUI();
 }
@@ -891,53 +967,55 @@ function placeFromHand(h) {
 // ===========================================================================
 // Panel / buttons
 // ===========================================================================
-// building buttons (have data-buy)
-document.querySelectorAll('.buy[data-buy]').forEach((btn) => {
-  btn.onclick = () => {
-    if (!isMyTurn()) return toast('Сейчас не ваш ход');
-    if (!selectedProvince) return toast('Сначала выберите свою провинцию');
-    const kind = btn.dataset.buy;
-    hand = hand && hand.kind === kind ? null : { kind };
-    selectedUnit = null; selectedBallista = null;
-    reachable.clear(); capturable.clear(); fireTargets.clear();
-    closeUnitMenu(); setHandUI(); draw();
-  };
-});
+let openMenuCat = null;
 
-// unit picker (opens upward)
-$('btnUnit').onclick = () => {
+function closeUnitMenu() { $('popMenu').classList.add('hidden'); openMenuCat = null; }
+
+function farmCostOf(pd) {
+  const members = provMembers.get(pd ? k(pd.capital.q, pd.capital.r) : '') || [];
+  return 12 + 2 * members.filter((m) => m.building === 'farm').length;
+}
+
+function toggleMenu(cat) {
   if (!isMyTurn()) return toast('Сейчас не ваш ход');
   if (!selectedProvince) return toast('Сначала выберите свою провинцию');
-  const menu = $('unitMenu');
-  if (!menu.classList.contains('hidden')) { closeUnitMenu(); return; }
-  buildUnitMenu();
-  menu.classList.remove('hidden');
-};
+  if (openMenuCat === cat) { closeUnitMenu(); return; }
+  buildMenu(cat);
+  $('popMenu').classList.remove('hidden');
+  openMenuCat = cat;
+}
+$('btnUnit').onclick = () => toggleMenu('unit');
+$('btnBuild').onclick = () => toggleMenu('build');
+$('btnSpell').onclick = () => toggleMenu('spell');
 
-function closeUnitMenu() { $('unitMenu').classList.add('hidden'); }
-
-function buildUnitMenu() {
-  const menu = $('unitMenu');
+function buildMenu(cat) {
+  const menu = $('popMenu');
   menu.innerHTML = '';
   const pd = provinceData();
-  for (const def of UNIT_DEFS) {
+  const defs = cat === 'unit' ? UNIT_DEFS : cat === 'build' ? BUILD_DEFS : SPELL_DEFS;
+  for (const def of defs) {
+    const cost = (cat === 'build' && def.kind === 'farm') ? farmCostOf(pd) : def.cost;
     const opt = document.createElement('div');
     opt.className = 'unit-opt';
-    const afford = pd && pd.money >= def.cost;
+    const afford = pd && pd.money >= cost;
     if (!afford) opt.setAttribute('disabled', '');
+
     const cv = document.createElement('canvas');
-    cv.width = 56; cv.height = 56;
-    const g = cv.getContext('2d');
-    drawUnit(g, { kind: def.kind, level: def.level, moved: false }, 28, 30, 26, true);
+    cv.width = 60; cv.height = 60;
+    drawIcon(cv.getContext('2d'), 30, 32, 26, cat, def);
     opt.appendChild(cv);
-    const label = document.createElement('span');
-    label.textContent = def.name;
-    opt.appendChild(label);
+
+    const nm = document.createElement('div');
+    nm.className = 'nm';
+    nm.innerHTML = `<span>${def.name}</span><small>${def.sub || ''}</small>`;
+    opt.appendChild(nm);
+
     const price = document.createElement('span');
-    price.className = 'price'; price.textContent = def.cost;
+    price.className = 'price'; price.textContent = '💰' + cost;
     opt.appendChild(price);
+
     if (afford) opt.onclick = () => {
-      hand = { kind: def.kind, level: def.level };
+      hand = { kind: def.kind };
       selectedUnit = null; selectedBallista = null;
       reachable.clear(); capturable.clear(); fireTargets.clear();
       closeUnitMenu(); setHandUI(); draw();
@@ -945,6 +1023,64 @@ function buildUnitMenu() {
     menu.appendChild(opt);
   }
 }
+
+// draw a small icon for a catalog entry into context g
+function drawIcon(g, cx, cy, R, cat, def) {
+  if (cat === 'unit') { drawUnit(g, { kind: def.kind, level: def.level, moved: false }, cx, cy, R, true); return; }
+  if (cat === 'build') {
+    if (def.kind === 'farm') { g.fillStyle = '#caa44a'; roundRectG(g, cx - R * 0.4, cy - R * 0.3, R * 0.8, R * 0.6, R * 0.08); g.fill(); }
+    else if (def.kind === 'tower') drawTowerG(g, cx, cy, R, '#cfd6e0', 1);
+    else if (def.kind === 'strongTower') drawTowerG(g, cx, cy, R, '#ff7043', 2);
+    else if (def.kind === 'ballista') drawBallista(g, cx, cy, R, false);
+    return;
+  }
+  // spells
+  const emoji = { thunder: '⚡', meteor: '☄️', earthquake: '🌋' }[def.kind] || '✨';
+  g.fillStyle = '#e8eef7';
+  g.font = `${Math.round(R * 1.4)}px system-ui`;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(emoji, cx, cy);
+}
+
+function roundRectG(g, x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+function drawTowerG(g, cx, cy, R, col, count) {
+  g.fillStyle = col;
+  const w = R * 0.5, hh = R * 0.6;
+  if (count === 2) {
+    g.beginPath();
+    g.moveTo(cx, cy - hh); g.lineTo(cx + w * 0.7, cy + hh * 0.5); g.lineTo(cx - w * 0.7, cy + hh * 0.5);
+    g.closePath(); g.fill();
+    g.fillStyle = '#ffd2c0';
+    g.beginPath();
+    g.moveTo(cx, cy - hh * 0.5); g.lineTo(cx + w * 0.4, cy + hh * 0.4); g.lineTo(cx - w * 0.4, cy + hh * 0.4);
+    g.closePath(); g.fill();
+  } else {
+    g.beginPath();
+    g.moveTo(cx, cy - hh * 0.7); g.lineTo(cx + w * 0.6, cy + hh * 0.4); g.lineTo(cx - w * 0.6, cy + hh * 0.4);
+    g.closePath(); g.fill();
+  }
+}
+
+// summoner ability
+$('btnAbility').onclick = () => {
+  if (!selectedUnit) return;
+  const u = hexMap.get(k(selectedUnit.q, selectedUnit.r));
+  if (!u || !u.unit || u.unit.kind !== 'summoner' || u.unit.summoned) return;
+  hand = { kind: 'summon', from: { q: selectedUnit.q, r: selectedUnit.r } };
+  reachable.clear(); capturable.clear();
+  setHandUI(); draw();
+};
+
+$('btnInfo').onclick = () => showBestiary();
 
 $('btnEnd').onclick = () => {
   if (!isMyTurn()) return;
@@ -964,16 +1100,20 @@ $('btnEndGame').onclick = () => {
   if (confirm('Завершить игру для всех и вернуться в лобби?')) net({ type: 'endGame' });
 };
 
+const HAND_NAMES = {
+  peasant: 'крестьянина', spearman: 'копейщика', baron: 'барона', knight: 'рыцаря',
+  horseman: 'всадника', scout: 'лазутчика', summoner: 'призывателя',
+  farm: 'ферму', tower: 'башню', strongTower: 'сильную башню', ballista: 'баллисту',
+  thunder: 'громовой удар', meteor: 'метеор', earthquake: 'землетрясение', summon: 'призыв',
+};
 function setHandUI() {
-  document.querySelectorAll('.buy[data-buy]').forEach((b) => b.classList.toggle('active', hand && hand.kind === b.dataset.buy));
   $('btnUnit').classList.toggle('active', hand && isUnitKind(hand.kind));
+  $('btnBuild').classList.toggle('active', hand && isBuildKind(hand.kind));
+  $('btnSpell').classList.toggle('active', hand && isSpellKind(hand.kind));
   const el = $('hand');
   if (hand) {
-    const names = {
-      peasant: 'крестьянина', spearman: 'копейщика', baron: 'барона', knight: 'рыцаря',
-      horseman: 'всадника', farm: 'ферму', tower: 'башню', strongTower: 'сильную башню', ballista: 'баллисту',
-    };
-    el.textContent = `Поставьте ${names[hand.kind]} — кликните по клетке (повторно — отмена)`;
+    const verb = isSpellKind(hand.kind) ? 'Примените' : hand.kind === 'summon' ? 'Призовите на соседнюю клетку:' : 'Поставьте';
+    el.textContent = `${verb} ${HAND_NAMES[hand.kind]} — кликните по клетке (повторно — отмена)`;
     el.classList.remove('hidden');
   } else { el.classList.add('hidden'); }
 }
@@ -1001,30 +1141,68 @@ function renderPanel() {
   if (pd) {
     const sign = pd.income >= 0 ? '+' : '';
     info.innerHTML = `Провинция: <b>💰 ${pd.money}</b> &nbsp; доход <b>${sign}${pd.income}/ход</b> &nbsp; (${pd.size} гекс.)`;
-    // farm cost
-    const members = provMembers.get(k(pd.capital.q, pd.capital.r)) || [];
-    const farms = members.filter((m) => m.building === 'farm').length;
-    $('farmCost').textContent = String(12 + 2 * farms);
   } else {
     info.textContent = isMyTurn() ? 'Выберите свою провинцию' : 'Ожидайте свой ход';
   }
 
   const canAct = isMyTurn() && !!pd;
-  const farmCount = (provMembers.get(pd ? k(pd.capital.q, pd.capital.r) : '') || []).filter((m) => m.building === 'farm').length;
-  const costs = { farm: 12 + 2 * farmCount, tower: 15, strongTower: 35, ballista: 80 };
-  document.querySelectorAll('.buy[data-buy]').forEach((b) => {
-    b.disabled = !canAct || (pd && pd.money < costs[b.dataset.buy]);
-  });
-  $('btnUnit').disabled = !canAct || (pd && pd.money < 10); // cheapest unit is 10
+  const money = pd ? pd.money : 0;
+  $('btnUnit').disabled = !canAct || money < 10;          // cheapest unit
+  $('btnBuild').disabled = !canAct || money < farmCostOf(pd); // cheapest build (farm)
+  $('btnSpell').disabled = !canAct || money < 30;         // cheapest spell
   if (!canAct) closeUnitMenu();
+
+  // summoner ability button
+  let showAbility = false;
+  if (isMyTurn() && selectedUnit) {
+    const u = hexMap.get(k(selectedUnit.q, selectedUnit.r));
+    showAbility = !!(u && u.unit && u.unit.kind === 'summoner' && !u.unit.summoned);
+  }
+  $('btnAbility').classList.toggle('hidden', !showAbility);
 
   $('btnUndo').disabled = !(isMyTurn() && state.canUndo);
   $('btnEnd').disabled = !isMyTurn();
   $('btnEnd').classList.toggle('ready', isMyTurn());
 
-  // host-only "end game" button
   const isHost = YOU === 0;
   $('btnEndGame').classList.toggle('hidden', !(isHost && state.status === 'playing'));
+}
+
+// ===========================================================================
+// Bestiary
+// ===========================================================================
+function bestiaryItem(cat, def) {
+  const cost = (cat === 'build' && def.kind === 'farm') ? '12+' : def.cost;
+  const cv = document.createElement('canvas');
+  cv.width = 80; cv.height = 80;
+  drawIcon(cv.getContext('2d'), 40, 42, 34, cat, def);
+  const row = document.createElement('div');
+  row.className = 'bestiary-item';
+  row.appendChild(cv);
+  const txt = document.createElement('div');
+  txt.innerHTML = `<div class="b-title">${def.name}<span class="price">💰${cost}</span></div>
+    <div class="b-desc">${def.sub ? def.sub + ' — ' : ''}${def.desc || ''}</div>`;
+  row.appendChild(txt);
+  return row;
+}
+
+function showBestiary() {
+  const el = $('bestiary');
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = '<h2>Бестиарий</h2>';
+  const sections = [['Юниты', 'unit', UNIT_DEFS], ['Постройки', 'build', BUILD_DEFS], ['Заклинания', 'spell', SPELL_DEFS]];
+  for (const [title, cat, defs] of sections) {
+    const h = document.createElement('h3'); h.textContent = title; card.appendChild(h);
+    for (const def of defs) card.appendChild(bestiaryItem(cat, def));
+  }
+  const close = document.createElement('button');
+  close.className = 'primary'; close.textContent = 'Закрыть'; close.style.marginTop = '12px';
+  close.onclick = () => el.classList.add('hidden');
+  card.appendChild(close);
+  el.innerHTML = '';
+  el.appendChild(card);
+  el.classList.remove('hidden');
 }
 
 let toastTimer = null;

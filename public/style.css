@@ -132,7 +132,7 @@ button.ghost:hover { background: #1f2c44; }
 }
 .prov-info { font-size: 14px; color: var(--muted); min-height: 18px; }
 .prov-info b { color: var(--text); }
-.buttons { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .buy { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 9px 2px; font-size: 12px; }
 .buy small { color: #ffd866; font-weight: 700; font-size: 11px; }
 .buy.active { background: var(--accent); }
@@ -149,20 +149,35 @@ button.ghost:hover { background: #1f2c44; }
 .tagbtn:hover { background: rgba(200, 60, 50, 0.95); }
 #timerTag.warn { background: rgba(200, 60, 50, 0.9); }
 
-/* unit picker popup (opens upward, above the panel) */
-.unit-menu {
+.info { background: rgba(40, 90, 160, 0.85); }
+.info:hover { background: rgba(50, 110, 190, 0.95); }
+
+/* picker popup (opens upward, above the panel) */
+.popup-menu {
   display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
   background: #11192a; border: 1px solid #2c3d5c; border-radius: 10px;
-  padding: 8px; margin-bottom: 4px;
+  padding: 8px; margin-bottom: 4px; max-height: 46vh; overflow-y: auto;
 }
+.popup-menu .full { grid-column: 1 / -1; font-size: 11px; color: var(--muted); padding: 0 4px 4px; }
 .unit-opt {
   display: flex; align-items: center; gap: 8px; padding: 8px 10px;
   border-radius: 8px; background: #1b2940; cursor: pointer; font-size: 13px;
 }
 .unit-opt:hover { background: #26344f; }
 .unit-opt[disabled] { opacity: 0.4; cursor: not-allowed; }
-.unit-opt canvas { width: 28px; height: 28px; flex: none; }
+.unit-opt canvas { width: 30px; height: 30px; flex: none; }
 .unit-opt .price { margin-left: auto; color: #ffd866; font-weight: 700; }
+.unit-opt .nm { display: flex; flex-direction: column; }
+.unit-opt .nm small { color: var(--muted); font-size: 10px; line-height: 1.1; }
+
+/* bestiary */
+#bestiary .card { width: min(560px, 94vw); max-height: 86vh; overflow-y: auto; text-align: left; }
+#bestiary h3 { margin: 14px 0 6px; color: var(--accent); }
+.bestiary-item { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border-radius: 8px; background: #11192a; margin-bottom: 6px; }
+.bestiary-item canvas { width: 40px; height: 40px; flex: none; }
+.bestiary-item .b-title { font-weight: 700; }
+.bestiary-item .b-title .price { color: #ffd866; font-weight: 700; margin-left: 6px; font-size: 13px; }
+.bestiary-item .b-desc { color: var(--muted); font-size: 13px; margin-top: 2px; }
 .settings-box label select { background: #11192a; color: var(--text); border: 1px solid #2c3d5c; border-radius: 8px; padding: 6px; }
 .settings input[type=checkbox], .settings-box input[type=checkbox] { width: auto; }
 .settings select { background: #11192a; color: var(--text); border: 1px solid #2c3d5c; border-radius: 8px; padding: 6px; }

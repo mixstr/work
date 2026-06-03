@@ -133,9 +133,8 @@ function broadcastLobby(room) {
 
 function broadcastState(room) {
   if (!room.game) return;
-  const snapshot = room.game.serialize();
   for (const s of room.seats) {
-    send(s.ws, { type: 'state', you: s.index, game: snapshot, turnDeadline: room.turnDeadline });
+    send(s.ws, { type: 'state', you: s.index, game: room.game.serialize(s.index), turnDeadline: room.turnDeadline });
   }
 }
 
@@ -194,7 +193,7 @@ wss.on('connection', (ws) => {
     if (room && seat) {
       seat.ws = ws; ws.roomId = room.id;
       send(ws, lobbyPayload(room, seat));
-      if (room.game) send(ws, { type: 'state', you: seat.index, game: room.game.serialize(), turnDeadline: room.turnDeadline });
+      if (room.game) send(ws, { type: 'state', you: seat.index, game: room.game.serialize(seat.index), turnDeadline: room.turnDeadline });
       broadcastLobby(room);
     } else {
       userRoom.delete(ws.username);
