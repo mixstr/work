@@ -71,7 +71,7 @@ const UNIT_DEFS = [
   { kind: 'horseman', level: 2, cost: 25, name: 'Всадник', sub: 'ур.2 · содерж. 10', desc: 'Сила копейщика, дальность ×1.5 (рейды на 2 гекса). Вне своей провинции живёт 3 хода.' },
   { kind: 'scout', level: 1, cost: 15, name: 'Лазутчик', sub: 'ур.1 · содерж. 4', desc: 'Скрытность: невидим врагу, пока не подойдёт к его земле. Диверсант.' },
   { kind: 'summoner', level: 2, cost: 35, name: 'Призыватель', sub: 'ур.2 · содерж. 12', desc: 'Раз в ход бесплатно призывает волка на соседнюю свою клетку. Волк живёт 2 хода, сила 1, бесплатен.' },
-  { kind: 'eagle', level: 4, cost: 120, name: 'Барон на орле', sub: 'ур.4 · содерж. 18', desc: 'Рейдовый воин: высаживается в ЛЮБУЮ клетку карты (если пробивает защиту). Сила рыцаря. Вне своей территории живёт 3 хода.' },
+  { kind: 'eagle', level: 3, cost: 120, name: 'Барон на орле', sub: 'ур.3 · содерж. 18', desc: 'Рейдовый воин: высаживается в ЛЮБУЮ клетку карты (если пробивает защиту). Сила барона (ур.3). Вне своей территории живёт 3 хода.' },
   { kind: 'wolf', level: 1, cost: 0, name: 'Волк', sub: 'TTL 2 хода · бесплатно', desc: 'Призывается призывателем. Живёт 2 хода, сила уровня 1, не объединяется. Захватывает незащищённые клетки.', summonedOnly: true },
 ];
 // movement / combat attributes mirrored from the server catalog (for highlights)
@@ -84,10 +84,10 @@ const CAT = {
   scout: { level: 1, moveRange: 4, special: true, noCapture: true },
   summoner: { level: 2, moveRange: 4, captureReach: 1, special: true },
   wolf: { level: 1, moveRange: 4, captureReach: 1, special: true },
-  eagle: { level: 4, moveRange: 99, captureReach: 99, special: true, landAnywhere: true },
+  eagle: { level: 3, moveRange: 99, captureReach: 99, special: true, landAnywhere: true },
 };
 const UPGRADE_DEFS = [
-  { kind: 'farmIncome', cost: 200, name: 'Аграрная реформа', sub: 'фермы ×2 дохода', desc: 'Покупается один раз за игру. Доход со всех ваших ферм удваивается (+8 вместо +4).' },
+  { kind: 'farmIncome', cost: 200, name: 'Аграрная реформа', sub: 'новые фермы ×2', desc: 'Покупается один раз за игру. Все фермы, построенные ПОСЛЕ покупки, дают удвоенный доход (+8 вместо +4). Старые фермы не меняются.' },
 ];
 const BUILD_DEFS = [
   { kind: 'farm', cost: 12, name: 'Ферма', sub: '+4 к доходу', desc: 'Строится рядом со столицей или другой фермой. Каждая следующая дороже на 2.' },

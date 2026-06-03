@@ -25,7 +25,7 @@ const UNIT_CATALOG = {
   scout: { level: 1, cost: 15, upkeep: 4, stealth: true, special: true, moveRange: 4, noCapture: true },
   summoner: { level: 2, cost: 35, upkeep: 12, special: true, moveRange: 4, captureReach: 1 },
   wolf: { level: 1, cost: 0, upkeep: 0, special: true, summonOnly: true, moveRange: 4, captureReach: 1 },
-  eagle: { level: 4, cost: 120, upkeep: 18, special: true, landAnywhere: true, moveRange: 99, captureReach: 99 },
+  eagle: { level: 3, cost: 120, upkeep: 18, special: true, landAnywhere: true, moveRange: 99, captureReach: 99 },
 };
 
 // One-time state upgrades, purchased once per player from a province treasury.
@@ -128,7 +128,7 @@ class Game {
   newHex(q, r) {
     return {
       q, r, owner: null, building: null, unit: null,
-      tree: false, gravestone: false, money: 0, fired: false,
+      tree: false, gravestone: false, money: 0, fired: false, farmBoost: false,
     };
   }
 
@@ -430,7 +430,7 @@ class Game {
     for (const h of this.hexes.values()) {
       if (h.owner !== idx) continue;
       h.owner = null; h.unit = null; h.building = null;
-      h.fired = false; h.money = 0; h.gravestone = false;
+      h.fired = false; h.money = 0; h.gravestone = false; h.farmBoost = false;
     }
   }
 
@@ -460,16 +460,14 @@ class Game {
     for (const prov of this.getProvinces()) {
       if (!prov.capital || prov.capital.owner !== me) continue;
       let income = 0;
-      let farms = 0;
       let upkeep = 0;
       for (const h of prov.members) {
         if (h.tree) income -= 1; else income += 1;
-        if (h.building === 'farm') farms += 1;
+        if (h.building === 'farm') income += h.farmBoost ? FARM_INCOME_UPGRADED : FARM_INCOME;
         if (h.building && BUILDING_UPKEEP[h.building]) upkeep += BUILDING_UPKEEP[h.building];
         if (h.unit) upkeep += unitUpkeep(h.unit);
       }
-      const farmValue = this.players[me] && this.players[me].upgrades.farmIncome ? FARM_INCOME_UPGRADED : FARM_INCOME;
-      income += farms * farmValue - upkeep;
+      income -= upkeep;
       prov.capital.money += income;
       if (prov.capital.money < 0) {
         prov.capital.money = 0;
@@ -553,6 +551,7 @@ class Game {
         owner: h.owner, building: h.building,
         unit: h.unit ? { ...h.unit } : null,
         tree: h.tree, gravestone: h.gravestone, money: h.money, fired: h.fired,
+        farmBoost: h.farmBoost,
       };
     }
     return { hexes: m, upgrades: this.players.map((p) => ({ ...p.upgrades })) };
@@ -566,6 +565,7 @@ class Game {
       h.owner = s.owner; h.building = s.building;
       h.unit = s.unit ? { ...s.unit } : null;
       h.tree = s.tree; h.gravestone = s.gravestone; h.money = s.money; h.fired = s.fired;
+      h.farmBoost = s.farmBoost;
     }
     if (snap.upgrades) {
       snap.upgrades.forEach((u, i) => { if (this.players[i]) this.players[i].upgrades = { ...u }; });
@@ -652,7 +652,7 @@ class Game {
     if (!this.defeatable(spec.level, def)) return this.fail('Клетка слишком хорошо защищена');
     if (to.tree) this.addMoney(prov, 3);
     to.owner = player;
-    to.tree = false; to.gravestone = false; to.building = null; to.fired = false;
+    to.tree = false; to.gravestone = false; to.building = null; to.fired = false; to.farmBoost = false;
     to.unit = { level: spec.level, kind: spec.kind, moved: true };
     if (from) from.unit = null;
     this.recomputeProvinces();
@@ -738,6 +738,8 @@ class Game {
     cap.money -= cost;
     to.building = type;
     if (type === 'ballista') to.fired = false;
+    // agrarian reform doubles only farms built AFTER the upgrade was bought
+    if (type === 'farm') to.farmBoost = !!(this.players[player] && this.players[player].upgrades.farmIncome);
     return true;
   }
 
@@ -841,18 +843,16 @@ class Game {
     for (const prov of provinces) {
       if (!prov.capital) continue;
       let income = 0;
-      let farms = 0;
       let upkeep = 0;
       for (const h of prov.members) {
         if (h.tree) income -= 1; else income += 1;
-        if (h.building === 'farm') farms += 1;
+        if (h.building === 'farm') income += h.farmBoost ? FARM_INCOME_UPGRADED : FARM_INCOME;
         if (h.building && BUILDING_UPKEEP[h.building]) upkeep += BUILDING_UPKEEP[h.building];
         if (h.unit) upkeep += unitUpkeep(h.unit);
         provByHex.set(key(h.q, h.r), key(prov.capital.q, prov.capital.r));
       }
       const owner = prov.capital.owner;
-      const farmValue = this.players[owner] && this.players[owner].upgrades.farmIncome ? FARM_INCOME_UPGRADED : FARM_INCOME;
-      income += farms * farmValue - upkeep;
+      income -= upkeep;
       // hide other players' treasury / income (fog over the economy)
       const mine = forPlayer == null || owner === forPlayer;
       provInfo.push({
