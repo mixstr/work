@@ -74,6 +74,10 @@ const UNIT_DEFS = [
   { kind: 'griffon', level: 3, cost: 120, name: 'Грифон', sub: 'ур.3 · содерж. 18', desc: 'Рейдовый воин: при покупке высаживается в ЛЮБУЮ клетку (с анимацией). Захватывает её только если примыкает к своей земле, иначе диверсирует. Дальше ходит как барон. Вне своей территории живёт 3 хода.' },
   { kind: 'wolf', level: 1, cost: 0, name: 'Волк', sub: 'TTL 2 хода · бесплатно', desc: 'Призывается призывателем. Живёт 2 хода, сила уровня 1, не объединяется. Захватывает незащищённые клетки.', summonedOnly: true },
 ];
+// combat constants mirrored from the server (server stays authoritative)
+const MAX_LEVEL = 4;                          // knight; max-level breaks max-level
+const STRANDED_LIMIT = 3;                     // turns a unit survives off home soil
+const BALLISTA = { range: 2, destroyPower: 3 }; // ranged attack profile
 // movement / combat attributes mirrored from the server catalog (for highlights)
 const CAT = {
   peasant: { level: 1, moveRange: 4, captureReach: 1 },
@@ -93,7 +97,7 @@ const BUILD_DEFS = [
   { kind: 'farm', cost: 12, name: 'Ферма', sub: '+4 к доходу', desc: 'Строится рядом со столицей или другой фермой. Каждая следующая дороже на 2.' },
   { kind: 'tower', cost: 15, name: 'Башня', sub: 'защита 2', desc: 'Защищает себя и соседние клетки на уровень 2.' },
   { kind: 'strongTower', cost: 35, name: 'Сильная башня', sub: 'защита 3', desc: 'Защита 3 уровня — пробивает только рыцарь.' },
-  { kind: 'ballista', cost: 80, name: 'Баллиста', sub: 'защита 3 · содерж. 45', desc: 'Не двигается. Раз в ход бьёт по вражескому юниту в радиусе 2 (до ур.3). Ломается рыцарём.' },
+  { kind: 'ballista', cost: 80, name: 'Баллиста', sub: 'защита 4 · содерж. 45', desc: 'Не двигается. Раз в ход бьёт по вражескому юниту в радиусе 2 (до ур.3). Защита 4 — ломается только рыцарём.' },
 ];
 const SPELL_DEFS = [
   { kind: 'thunder', cost: 30, name: 'Громовой удар', sub: 'оглушение', desc: 'Оглушает вражеского юнита — он пропускает свой следующий ход.' },
@@ -603,7 +607,7 @@ function drawUnit(g, unit, cx, cy, R, ignoreMoved) {
     g.fillStyle = '#ff6b6b';
     g.font = `bold ${Math.round(R * 0.42)}px system-ui`;
     g.textAlign = 'center'; g.textBaseline = 'middle';
-    const left = Math.max(0, 4 - unit.stranded);
+    const left = Math.max(0, STRANDED_LIMIT + 1 - unit.stranded);
     g.fillText('⌛' + left, cx - R * 0.4, cy - R * 0.5);
   }
   if (kind === 'wolf' && unit.ttl > 0) {
@@ -957,7 +961,8 @@ function selfDef(h) {
   let d = 0;
   if (h.building === 'castle') d = Math.max(d, 1);
   else if (h.building === 'tower') d = Math.max(d, 2);
-  else if (h.building === 'strongTower' || h.building === 'ballista') d = Math.max(d, 3);
+  else if (h.building === 'ballista') d = Math.max(d, 4);
+  else if (h.building === 'strongTower') d = Math.max(d, 3);
   if (h.unit && h.unit.owner === h.owner) d = Math.max(d, h.unit.level);
   return d;
 }
@@ -978,11 +983,13 @@ function hexDist(a, b) {
   return (Math.abs(a.q - b.q) + Math.abs(a.r - b.r) + Math.abs(a.q + a.r - b.q - b.r)) / 2;
 }
 
-function defeatable(level, def) { return level > def || (level === 4 && def === 4); }
+// Combat resolution, mirrored from the server (power-vs-rating, no per-unit casing).
+function breaches(power, def) { return power > def || (power >= MAX_LEVEL && def >= MAX_LEVEL); }
+function destroys(power, level) { return power >= level; }
 function mergeableC(a, b) {
   const ca = CAT[a.kind] || {}; const cb = CAT[b.kind] || {};
   if (ca.special || cb.special) return false;
-  return a.level + b.level <= 4;
+  return a.level + b.level <= MAX_LEVEL;
 }
 function adjacentToOwn(h) { return neighborsOf(h).some((n) => n.owner === YOU); }
 
@@ -991,10 +998,10 @@ function canEnterForeignC(spec, h) {
   const cat = CAT[spec.kind] || {};
   const buildingBlocks = h.building && h.building !== 'farm';
   const capture = !cat.noCapture && adjacentToOwn(h);
-  if (capture) return defeatable(spec.level, defenseOf(h));
+  if (capture) return breaches(spec.level, defenseOf(h));
   if (buildingBlocks) return false;
   if (cat.noCapture) return !h.unit;            // scout: stealthy, can't fight
-  return defeatable(spec.level, defenseOf(h));   // raider infiltrating deep
+  return breaches(spec.level, defenseOf(h));     // raider infiltrating deep
 }
 
 // Mirror of server moveOptions for an existing unit hex `uh`.
@@ -1011,7 +1018,7 @@ function clientMoveOptions(uh) {
     if (h === uh || h.owner !== YOU) return;
     if (h.unit) {
       if (h.unit.owner === YOU) { if (mergeableC(unit, h.unit)) reach.add(k(h.q, h.r)); }
-      else if (defeatable(unit.level, h.unit.level)) cap.add(k(h.q, h.r));
+      else if (breaches(unit.level, h.unit.level)) cap.add(k(h.q, h.r));
     } else if (!h.building || h.building === 'farm') {
       reach.add(k(h.q, h.r));
     }
@@ -1094,8 +1101,8 @@ function computeHighlights() {
     if (bh && bh.building === 'ballista' && !bh.fired) {
       for (const h of state.hexes) {
         if (h.owner === YOU || !h.unit) continue;
-        if (h.unit.level > 3) continue; // knight is too tough
-        if (hexDist(bh, h) <= 2) fireTargets.add(k(h.q, h.r));
+        if (!destroys(BALLISTA.destroyPower, h.unit.level)) continue; // knight is too tough
+        if (hexDist(bh, h) <= BALLISTA.range) fireTargets.add(k(h.q, h.r));
       }
     }
     return;

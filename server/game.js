@@ -39,25 +39,31 @@ const FARM_INCOME = 4;
 const FARM_INCOME_UPGRADED = 8;
 const BASE_MOVE = 4;
 
-// Spell costs (paid from the casting province).
+// Highest unit level (knight). A max-level attack also breaks an equal max-level
+// defence — that single rule is what lets a knight kill another knight or smash
+// a ballista, instead of scattering `=== 4` special cases through the code.
+const MAX_LEVEL = 4;
+
+// Spell catalog. `target` documents what the spell needs; `destroyPower` is the
+// highest unit level a damage spell can kill — so the rule is data, not a
+// hardcoded "is the target a knight?" branch. `radius` is the area of effect.
 const SPELL = {
-  thunder: { cost: 30 },
-  meteor: { cost: 60 },
-  earthquake: { cost: 180 },
+  thunder: { cost: 30, target: 'enemyUnit' },
+  meteor: { cost: 60, target: 'enemyUnitOrBuilding', destroyPower: 3 },
+  earthquake: { cost: 180, target: 'fortifications', radius: 1 },
 };
 
-const BALLISTA_COST = 80;
-const BALLISTA_UPKEEP = 45;
-const BALLISTA_RANGE = 2;
-const BALLISTA_LEVEL = 3;
-
-const TOWER_COST = 15;
-const STRONG_TOWER_COST = 35;
-const FARM_BASE = 12;
-const FARM_STEP = 2;
-
-const BUILDING_DEFENSE = { castle: 1, tower: 2, strongTower: 3, ballista: 3, farm: 0 };
-const BUILDING_UPKEEP = { ballista: BALLISTA_UPKEEP };
+// Building catalog: everything about a building lives in one place — its
+// defence rating, purchase cost, per-turn upkeep, and special behaviour.
+//   farm.cost grows by farm.costStep for each farm already in the province;
+//   ballista.range / .destroyPower drive its once-per-turn ranged attack.
+const BUILDINGS = {
+  castle: { defense: 1 },
+  farm: { defense: 0, cost: 12, costStep: 2 },
+  tower: { defense: 2, cost: 15 },
+  strongTower: { defense: 3, cost: 35 },
+  ballista: { defense: 4, cost: 80, upkeep: 45, range: 2, destroyPower: 3 },
+};
 const FORTIFICATIONS = ['tower', 'strongTower', 'ballista'];
 
 const STARTING_MONEY = 10;
@@ -86,6 +92,9 @@ function unitUpkeep(unit) {
   if (cat) return cat.upkeep;
   return UPKEEP[unit.level] || 0;
 }
+
+function buildingDefense(type) { return (BUILDINGS[type] && BUILDINGS[type].defense) || 0; }
+function buildingUpkeep(type) { return (BUILDINGS[type] && BUILDINGS[type].upkeep) || 0; }
 
 class Game {
   constructor(players, opts = {}) {
@@ -291,8 +300,7 @@ class Game {
   // A unit only defends the tile if it belongs to the tile's owner. Infiltrators
   // (a unit whose owner differs from the tile owner) do NOT fortify the tile.
   hexSelfDefense(h) {
-    let d = 0;
-    if (h.building) d = Math.max(d, BUILDING_DEFENSE[h.building] || 0);
+    let d = buildingDefense(h.building);
     if (h.unit && h.unit.owner === h.owner) d = Math.max(d, h.unit.level);
     return d;
   }
@@ -306,18 +314,26 @@ class Game {
     return d;
   }
 
-  // A unit defeats a defense if its level strictly exceeds it — with one
-  // exception: a level-4 unit (knight) can break an equal level-4 defense,
-  // so a knight is able to kill another knight.
-  defeatable(level, def) {
-    return level > def || (level === 4 && def === 4);
+  // Combat resolution as pure power-vs-rating, no per-unit casing.
+  // breaches: a melee attack of `power` overruns a `defense` rating. Strictly
+  //   greater wins; a max-level attack also breaks an equal max-level defence
+  //   (knight kills knight, knight smashes a ballista wall).
+  breaches(power, defense) {
+    return power > defense || (power >= MAX_LEVEL && defense >= MAX_LEVEL);
+  }
+
+  // destroys: a ranged strike (meteor, ballista) annihilates a unit when its
+  //   power is at least the unit's level — so power 3 clears everything up to
+  //   level 3 and a level-4 knight shrugs it off.
+  destroys(power, level) {
+    return power >= level;
   }
 
   mergeable(a, b) {
     const ca = UNIT_CATALOG[a.kind] || {};
     const cb = UNIT_CATALOG[b.kind] || {};
     if (ca.special || cb.special) return false;
-    return a.level + b.level <= 4;
+    return a.level + b.level <= MAX_LEVEL;
   }
 
   adjacentToOwner(to, player) {
@@ -334,7 +350,7 @@ class Game {
     const capture = !cat.noCapture && this.adjacentToOwner(to, player);
 
     if (capture) {
-      if (!this.defeatable(spec.level, this.defenseOf(to))) return null;
+      if (!this.breaches(spec.level, this.defenseOf(to))) return null;
       return { capture: true };
     }
     // infiltration (no ownership change)
@@ -345,7 +361,7 @@ class Game {
       return { capture: false };
     }
     // raider infiltrating deep: must still beat the defence (incl. any unit)
-    if (!this.defeatable(spec.level, this.defenseOf(to))) return null;
+    if (!this.breaches(spec.level, this.defenseOf(to))) return null;
     return { capture: false };
   }
 
@@ -365,7 +381,7 @@ class Game {
       if (h.owner === player) {
         if (h.unit) {
           if (h.unit.owner === player) { if (this.mergeable(unit, h.unit)) reachable.add(key(h.q, h.r)); }
-          else if (this.defeatable(unit.level, h.unit.level)) capturable.add(key(h.q, h.r)); // kill infiltrator on own land
+          else if (this.breaches(unit.level, h.unit.level)) capturable.add(key(h.q, h.r)); // kill infiltrator on own land
         } else if (!h.building || h.building === 'farm') {
           reachable.add(key(h.q, h.r));
         }
@@ -498,7 +514,7 @@ class Game {
       for (const h of prov.members) {
         if (h.tree) income -= 1; else income += 1;
         if (h.building === 'farm') income += h.farmBoost ? FARM_INCOME_UPGRADED : FARM_INCOME;
-        if (h.building && BUILDING_UPKEEP[h.building]) upkeep += BUILDING_UPKEEP[h.building];
+        upkeep += buildingUpkeep(h.building);
         if (h.unit && h.unit.owner === me) upkeep += unitUpkeep(h.unit);
       }
       income -= upkeep;
@@ -518,11 +534,14 @@ class Game {
       if (h.unit.ttl <= 0) { h.unit = null; h.gravestone = true; }
     }
 
-    // stranded units: my units sitting off funded home soil (incl. infiltrators
-    // and raiders behind enemy lines) die after STRANDED_LIMIT turns.
+    // time-to-live off home soil. A unit standing anywhere that isn't one of my
+    // funded province tiles — raiding behind enemy lines, or cut off on an
+    // unfunded lone hex — counts a turn; after STRANDED_LIMIT turns away it dies.
+    // The counter is cleared only by standing back on funded home soil, so it
+    // never resets while the unit lingers in enemy territory.
     for (const h of this.hexes.values()) {
       if (!h.unit || h.unit.owner !== me) continue;
-      if (h.unit.kind === 'wolf') continue; // wolves use their own TTL instead
+      if (h.unit.kind === 'wolf') continue; // wolves run their own ttl instead
       if (fundedHexes.has(key(h.q, h.r))) {
         h.unit.stranded = 0;
       } else {
@@ -666,7 +685,7 @@ class Game {
     if (to.owner === player) {
       // own tile: merge / reposition, or kill an enemy infiltrator squatting here
       if (to.unit && to.unit.owner !== player) {
-        if (!this.defeatable(spec.level, to.unit.level)) return this.fail('Здесь слишком сильный вражеский юнит');
+        if (!this.breaches(spec.level, to.unit.level)) return this.fail('Здесь слишком сильный вражеский юнит');
         to.unit = mk(true);
         to.gravestone = false;
         if (from) from.unit = null;
@@ -765,24 +784,23 @@ class Game {
       return this.fail('Не выбрана столица провинции');
     }
     if (!to) return this.fail('Нет такой клетки');
+    const cfg = BUILDINGS[type];
+    if (!cfg || cfg.cost == null) return this.fail('Неизвестная постройка');
     const prov = this.provinceOf(cap);
     if (!prov.members.includes(to)) return this.fail('Строить можно только на своей земле');
     if (to.building) return this.fail('Клетка уже занята постройкой');
     if (to.unit) return this.fail('На клетке стоит юнит');
     if (to.tree) return this.fail('Сначала уберите дерево');
 
-    let cost;
+    let cost = cfg.cost;
     if (type === 'farm') {
       const farms = prov.members.filter((m) => m.building === 'farm').length;
-      cost = FARM_BASE + FARM_STEP * farms;
+      cost = cfg.cost + cfg.costStep * farms;
       const adjOk = this.neighbors(to).some(
         (n) => n.owner === player && (n.building === 'castle' || n.building === 'farm'),
       );
       if (!adjOk) return this.fail('Ферма строится рядом со столицей или другой фермой');
-    } else if (type === 'tower') cost = TOWER_COST;
-    else if (type === 'strongTower') cost = STRONG_TOWER_COST;
-    else if (type === 'ballista') cost = BALLISTA_COST;
-    else return this.fail('Неизвестная постройка');
+    }
 
     if (cap.money < cost) return this.fail('Недостаточно монет');
     cap.money -= cost;
@@ -796,12 +814,13 @@ class Game {
   actFireBallista(player, action) {
     const from = this.resolveHex(action.from);
     const to = this.resolveHex(action.to);
+    const cfg = BUILDINGS.ballista;
     if (!from || from.owner !== player || from.building !== 'ballista') return this.fail('Нет вашей баллисты');
     if (from.fired) return this.fail('Баллиста уже стреляла в этот ход');
     if (!to) return this.fail('Нет такой клетки');
-    if (hexDistance(from, to) > BALLISTA_RANGE) return this.fail('Цель вне радиуса');
+    if (hexDistance(from, to) > cfg.range) return this.fail('Цель вне радиуса');
     if (!to.unit || to.unit.owner === player) return this.fail('В цели нет вражеского юнита');
-    if (to.unit.level > BALLISTA_LEVEL) return this.fail('Слишком сильный юнит (нужен 4-й уровень)');
+    if (!this.destroys(cfg.destroyPower, to.unit.level)) return this.fail('Юнит слишком силён для баллисты');
     to.unit = null;
     to.gravestone = true;
     from.fired = true;
@@ -838,31 +857,15 @@ class Game {
     const to = this.resolveHex(action.to);
     if (!to) return this.fail('Нет такой клетки');
 
-    // figure out whose piece is being hit (for the kill-feed announcement)
+    // whose piece is being hit — captured before the effect mutates the tile
+    // (meteor wipes the unit, so reading it afterwards would be too late)
     let target = null;
     if (to.unit) target = to.unit.owner;
     else if (to.owner != null && to.owner !== player) target = to.owner;
 
-    if (action.spell === 'meteor') {
-      if (to.unit) {
-        if (to.unit.level > 3) return this.fail('Метеор не пробивает рыцаря');
-        to.unit = null; to.gravestone = true;
-      } else if (to.building && to.building !== 'castle') {
-        to.building = null; to.fired = false; to.farmBoost = false;
-      } else {
-        return this.fail('В цели нечего разрушать');
-      }
-    } else if (action.spell === 'thunder') {
-      if (!to.unit || to.unit.owner === player) return this.fail('Цель — вражеский юнит');
-      to.unit.stunned = true;
-      to.unit.moved = true;
-    } else if (action.spell === 'earthquake') {
-      let any = false;
-      for (const h of this.hexesWithin(to, 1)) {
-        if (FORTIFICATIONS.includes(h.building)) { h.building = null; h.fired = false; any = true; }
-      }
-      if (!any) return this.fail('Поблизости нет укреплений');
-    }
+    // each spell returns true on success or a failure message string
+    const result = this.applySpell(action.spell, spell, to, player);
+    if (result !== true) return this.fail(result);
 
     cap.money -= spell.cost;
     this.lastEvents.push({
@@ -871,6 +874,48 @@ class Game {
     });
     this.recomputeProvinces();
     return true;
+  }
+
+  // Spell effects, one method each. Returns true on success or a message string.
+  applySpell(name, spell, to, player) {
+    switch (name) {
+      case 'meteor': return this.spellMeteor(to, spell);
+      case 'thunder': return this.spellThunder(to, player);
+      case 'earthquake': return this.spellEarthquake(to, spell);
+      default: return 'Неизвестное заклинание';
+    }
+  }
+
+  // Meteor: destroy any unit it outpowers (data-driven, no knight special case),
+  // otherwise demolish a building (except a capital). No capture.
+  spellMeteor(to, spell) {
+    if (to.unit) {
+      if (!this.destroys(spell.destroyPower, to.unit.level)) return 'Юнит слишком силён для метеора';
+      to.unit = null; to.gravestone = true;
+      return true;
+    }
+    if (to.building && to.building !== 'castle') {
+      to.building = null; to.fired = false; to.farmBoost = false;
+      return true;
+    }
+    return 'В цели нечего разрушать';
+  }
+
+  // Thunder: stun an enemy unit for its next turn.
+  spellThunder(to, player) {
+    if (!to.unit || to.unit.owner === player) return 'Цель — вражеский юнит';
+    to.unit.stunned = true;
+    to.unit.moved = true;
+    return true;
+  }
+
+  // Earthquake: level every fortification in range.
+  spellEarthquake(to, spell) {
+    let any = false;
+    for (const h of this.hexesWithin(to, spell.radius)) {
+      if (FORTIFICATIONS.includes(h.building)) { h.building = null; h.fired = false; any = true; }
+    }
+    return any ? true : 'Поблизости нет укреплений';
   }
 
   actBuyUpgrade(player, action) {
@@ -901,7 +946,7 @@ class Game {
       for (const h of prov.members) {
         if (h.tree) income -= 1; else income += 1;
         if (h.building === 'farm') income += h.farmBoost ? FARM_INCOME_UPGRADED : FARM_INCOME;
-        if (h.building && BUILDING_UPKEEP[h.building]) upkeep += BUILDING_UPKEEP[h.building];
+        upkeep += buildingUpkeep(h.building);
         if (h.unit && h.unit.owner === prov.capital.owner) upkeep += unitUpkeep(h.unit);
         provByHex.set(key(h.q, h.r), key(prov.capital.q, prov.capital.r));
       }
