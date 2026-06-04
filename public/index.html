@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Antiyoy Online</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Lobby / menu -->
+  <div id="menu" class="screen">
+    <div class="card">
+      <div class="userbar">
+        <span>Вы вошли как <b id="meName">…</b></span>
+        <button id="btnLogout" class="ghost">Выйти</button>
+      </div>
+      <h1>Antiyoy <span>Online</span></h1>
+      <label>Имя в игре (никнейм)
+        <input id="name" maxlength="16" placeholder="Игрок" />
+      </label>
+
+      <div class="row">
+        <button id="btnCreate" class="primary">Создать игру</button>
+      </div>
+
+      <div class="divider">или</div>
+
+      <div class="row">
+        <input id="joinCode" maxlength="4" placeholder="КОД" style="text-transform:uppercase" />
+        <button id="btnJoin">Войти</button>
+      </div>
+
+      <details class="settings">
+        <summary>Настройки карты (для новой игры)</summary>
+        <label>Ширина <input id="optW" type="number" min="6" max="24" value="14" /></label>
+        <label>Высота <input id="optH" type="number" min="6" max="20" value="11" /></label>
+        <label>Макс. игроков <input id="optMax" type="number" min="2" max="8" value="4" /></label>
+        <label>Деревья <input id="optTrees" type="checkbox" checked /></label>
+        <label>Таймер хода
+          <select id="optTimer">
+            <option value="0">выкл</option>
+            <option value="30">30 сек</option>
+            <option value="45">45 сек</option>
+            <option value="60">60 сек</option>
+          </select>
+        </label>
+      </details>
+
+      <p id="menuError" class="error"></p>
+    </div>
+  </div>
+
+  <!-- Lobby waiting room -->
+  <div id="lobby" class="screen hidden">
+    <div class="card">
+      <h2>Комната <span id="lobbyCode" class="code"></span></h2>
+      <p class="hint">Поделитесь кодом с друзьями, чтобы они вошли.</p>
+      <ul id="playerList"></ul>
+
+      <fieldset id="lobbySettings" class="settings-box">
+        <legend>Настройки игры</legend>
+        <label>Ширина карты <input id="lobW" type="number" min="6" max="24" /></label>
+        <label>Высота карты <input id="lobH" type="number" min="6" max="20" /></label>
+        <label>Макс. игроков <input id="lobMax" type="number" min="2" max="8" /></label>
+        <label>Деревья <input id="lobTrees" type="checkbox" /></label>
+        <label>Таймер хода
+          <select id="lobTimer">
+            <option value="0">выкл</option>
+            <option value="30">30 сек</option>
+            <option value="45">45 сек</option>
+            <option value="60">60 сек</option>
+          </select>
+        </label>
+        <p id="settingsHint" class="hint"></p>
+      </fieldset>
+
+      <div class="row">
+        <button id="btnStart" class="primary hidden">Начать игру</button>
+        <button id="btnLeave" class="ghost">Выйти</button>
+      </div>
+      <p id="lobbyHint" class="hint"></p>
+    </div>
+  </div>
+
+  <!-- Game -->
+  <div id="game" class="screen hidden">
+    <canvas id="board"></canvas>
+
+    <div id="topbar">
+      <span id="roomTag" class="tag"></span>
+      <span id="turnTag" class="tag"></span>
+      <span id="timerTag" class="tag hidden"></span>
+      <span style="flex:1"></span>
+      <button id="chatToggle" class="tag tagbtn chatbtn">💬 Чат</button>
+      <button id="btnInfo" class="tag tagbtn info">ℹ Бестиарий</button>
+      <button id="btnEndGame" class="tag tagbtn hidden">Завершить игру</button>
+    </div>
+
+    <div id="killfeed" class="killfeed"></div>
+
+    <div id="chat" class="chat collapsed">
+      <div id="chatLog" class="chat-log"></div>
+      <div class="chat-input-row">
+        <input id="chatInput" maxlength="240" placeholder="Сообщение…" autocomplete="off" />
+        <button id="chatSend">▶</button>
+      </div>
+    </div>
+
+    <div id="panel">
+      <div id="provInfo" class="prov-info">Выберите свою провинцию</div>
+
+      <div id="popMenu" class="popup-menu hidden"></div>
+
+      <div class="buttons">
+        <button id="btnUnit" class="buy">Юниты ▲</button>
+        <button id="btnBuild" class="buy">Постройки ▲</button>
+        <button id="btnSpell" class="buy">Заклинания ▲</button>
+        <button id="btnUpgrade" class="buy">Держава ▲</button>
+        <button id="btnAbility" class="buy hidden">Призвать</button>
+      </div>
+      <div id="hand" class="hand hidden"></div>
+      <div class="action-row">
+        <button id="btnUndo" class="undo" disabled>↶ Отменить</button>
+        <button id="btnEnd" class="endturn">Завершить ход</button>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+    <div id="overlay" class="overlay hidden"></div>
+    <div id="bestiary" class="overlay hidden"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
